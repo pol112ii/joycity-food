@@ -142,28 +142,30 @@ def hold_button(sct, button, release_when, label):
 def human_click(point, jx=10, jy=4):
     x = point[0] + random.randint(-jx, jx)
     y = point[1] + random.randint(-jy, jy)
-    pyautogui.moveTo(x, y, duration=random.uniform(0.08, 0.2))
+    pyautogui.moveTo(x, y, duration=random.uniform(0.25, 0.45))
+    time.sleep(random.uniform(0.1, 0.25))
     pyautogui.mouseDown()
-    time.sleep(random.uniform(0.06, 0.14))
+    time.sleep(random.uniform(0.08, 0.18))
     pyautogui.mouseUp()
 
 
 def human_drag(src, dst):
-    """사람처럼 드래그: 누르고 → 이동(중간점 경유) → 떼기."""
+    """사람처럼 드래그: 누르고 → 이동(중간점 경유) → 떼기. 서두르지 않음(튕김 방지)."""
     sx, sy = jittered(src, 5)
     dx, dy = jittered(dst, 5)
-    pyautogui.moveTo(sx, sy, duration=random.uniform(0.12, 0.3))
-    time.sleep(random.uniform(0.05, 0.15))
+    pyautogui.moveTo(sx, sy, duration=random.uniform(0.3, 0.55))
+    time.sleep(random.uniform(0.15, 0.3))
     pyautogui.mouseDown()
-    time.sleep(random.uniform(0.08, 0.2))
+    time.sleep(random.uniform(0.15, 0.3))
     # 중간점 하나 거쳐서 자연스러운 곡선 흉내
     mx = (sx + dx) // 2 + random.randint(-25, 25)
     my = (sy + dy) // 2 + random.randint(-15, 15)
-    pyautogui.moveTo(mx, my, duration=random.uniform(0.1, 0.22))
-    pyautogui.moveTo(dx, dy, duration=random.uniform(0.1, 0.22))
-    time.sleep(random.uniform(0.06, 0.15))
+    pyautogui.moveTo(mx, my, duration=random.uniform(0.2, 0.4))
+    pyautogui.moveTo(dx, dy, duration=random.uniform(0.2, 0.4))
+    time.sleep(random.uniform(0.15, 0.3))
     pyautogui.mouseUp()
-    time.sleep(random.uniform(0.25, 0.55))
+    # 다음 동작까지 사람처럼 한 템포 쉬기 (드래그 연속 튕김 방지의 핵심)
+    time.sleep(random.uniform(0.8, 1.6))
 
 
 # ---------------------------------------------------------------- 아이템 인식
@@ -235,14 +237,14 @@ def reopen_window(sct):
     if JOB_BTN is not None:
         print("직업 버튼 클릭")
         human_click(JOB_BTN, jx=5, jy=5)
-        time.sleep(random.uniform(0.7, 1.2))
+        time.sleep(random.uniform(1.2, 2.0))
     print("직업활동 버튼 클릭")
     human_click(JOB_ACT_BTN, jx=8, jy=4)
     t0 = time.time()
     while running and alive and time.time() - t0 < REOPEN_WAIT:
         if window_open(sct):
             print("음식만들기 창 열림 확인")
-            time.sleep(random.uniform(0.5, 0.9))
+            time.sleep(random.uniform(1.0, 1.8))
             return True
         time.sleep(0.2)
     print("[실패] 음식만들기 창이 안 열림 — 좌표/창 위치 확인")
@@ -281,7 +283,7 @@ def cook_one_round(sct):
     """시작 클릭 → 온도 유지 → 요리 종료 감지. 정상 종료면 True."""
     print("시작 버튼 클릭!")
     human_click(START_BTN, jx=12, jy=4)
-    time.sleep(random.uniform(0.5, 0.9))
+    time.sleep(random.uniform(0.8, 1.4))
 
     t_start = time.time()
     seen = False        # 수은을 한 번이라도 봤는지
@@ -367,7 +369,8 @@ def worker():
                     running = False
                     print("정지 (LOOP=False). 다시 하려면 F8.")
                 else:
-                    time.sleep(random.uniform(1.2, 2.5))
+                    # 판 사이 휴식 — 사람이 결과 확인하는 정도의 텀
+                    time.sleep(random.uniform(2.5, 4.5))
     except Exception:
         import traceback
         print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
