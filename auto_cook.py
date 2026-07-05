@@ -50,16 +50,16 @@ MIN_GAP    = (0.28, 0.65)
 SAMPLE_DT  = 0.03
 
 # ===================== 인벤토리 / 슬롯 (measure.py로 측정!) =====================
-CELL1_CENTER = (0, 0)   # 인벤토리 첫 칸(왼쪽 위) 중심 좌표  ← 측정 필요!
-PITCH_X = 36            # 옆 칸까지 가로 간격
-PITCH_Y = 36            # 아래 칸까지 세로 간격
-COLS = 7
+CELL1_CENTER = (2843, 67)  # 인벤토리 첫 칸(왼쪽 위) 중심 좌표
+PITCH_X = 44            # 옆 칸까지 가로 간격
+PITCH_Y = 39            # 아래 칸까지 세로 간격
+COLS = 6
 ROWS = 5
 CELL_SIZE = 32          # capture_items.py와 같은 값
 
-SLOT1_CENTER = (0, 0)   # 요리창 재료 슬롯 1번(맨 왼쪽 검은 칸) 중심  ← 측정 필요!
-SLOT_PITCH_X = 48       # 슬롯 간 가로 간격 (2번 슬롯 중심 x - 1번 슬롯 중심 x)
-NUM_SLOTS = 5
+SLOT1_CENTER = (3155, 87)  # 요리창 재료 슬롯 1번(맨 왼쪽 검은 칸) 중심
+SLOT_PITCH_X = 50       # 슬롯 간 가로 간격
+NUM_SLOTS = 4           # 지금 열려있는 슬롯 수 (5개 열리면 5로)
 
 # ===================== 레시피 =====================
 # (재료이름, 넣을 개수) — 이름은 items 폴더의 파일명과 똑같이.
@@ -199,16 +199,18 @@ def scan_inventory(sct, templates):
 
 def fill_slots(sct, templates):
     """레시피대로 재료를 요리창 슬롯에 드래그. 성공하면 True."""
-    found = scan_inventory(sct, templates)
-    print("인벤토리 인식:", {k: len(v) for k, v in found.items()})
     slot = 0
     for name, count in RECIPE:
-        if name not in found:
-            print(f"[중단] 재료 '{name}' 를 인벤토리에서 못 찾음")
-            return False
         for _ in range(count):
             if slot >= NUM_SLOTS:
-                print("[중단] 슬롯이 5개를 넘음 — RECIPE 수량 확인")
+                print(f"[중단] 열려있는 슬롯({NUM_SLOTS}개)을 넘음 — RECIPE 수량 확인")
+                return False
+            # 드래그할 때마다 다시 스캔 (재고가 줄어 칸이 바뀌어도 따라감)
+            found = scan_inventory(sct, templates)
+            if slot == 0:
+                print("인벤토리 인식:", {k: len(v) for k, v in found.items()})
+            if name not in found:
+                print(f"[중단] 재료 '{name}' 를 인벤토리에서 못 찾음")
                 return False
             src = found[name][0]
             dst = (SLOT1_CENTER[0] + slot * SLOT_PITCH_X, SLOT1_CENTER[1])
