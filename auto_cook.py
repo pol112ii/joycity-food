@@ -70,6 +70,16 @@ RECIPE = [
 ]
 
 LOOP = False            # True면 재료가 떨어질 때까지 자동 반복
+
+# ----- 요리창 다시 열기 (LOOP용) -----
+# 요리가 끝나면 음식만들기 창이 닫히므로, 반복하려면 다시 여는 클릭이 필요.
+# JOB_BTN     = 화면 아래 메뉴의 "직업" 아이콘 중심 좌표.
+#               직업 창이 요리 중에도 계속 열려있다면 None으로 (클릭 생략).
+# JOB_ACT_BTN = 직업 창의 "직업활동" 버튼 중심 좌표.
+JOB_BTN     = None      # 예: (2900, 500)  ← measure.py로 측정
+JOB_ACT_BTN = None      # 예: (3050, 460)  ← measure.py로 측정
+GAUGE_BG_RGB = (40, 88, 47)   # 음식만들기 창의 온도계 주변 진초록 (열림 확인용)
+REOPEN_WAIT = 8         # 창 열림 최대 대기(초)
 MATCH_THRESHOLD = 28    # 아이콘 판별 기준 (평균 색 차이) — 오인식하면 낮추기
 BADGE_CUT = 10          # 칸 왼쪽 위 수량 숫자를 피해서 비교 (이만큼 잘라냄)
 COOK_TIMEOUT = 90       # 요리 1판 최대 대기(초)
@@ -197,6 +207,40 @@ def scan_inventory(sct, templates):
 
 # ---------------------------------------------------------------- 단계별 동작
 
+_bg = np.array(GAUGE_BG_RGB, dtype=int)
+
+
+def window_open(sct):
+    """음식만들기 창이 열려있는지 — 온도계 영역에 특유의 진초록이 충분히 보이는지로 판단."""
+    region = {"top": GAUGE_TOP, "left": GAUGE_LEFT,
+              "width": GAUGE_WIDTH, "height": GAUGE_HEIGHT}
+    img = np.asarray(sct.grab(region), dtype=int)[:, :, :3][:, :, ::-1]
+    near_bg = np.all(np.abs(img - _bg) <= 30, axis=-1)
+    return near_bg.mean() > 0.25
+
+
+def reopen_window(sct):
+    """직업 → 직업활동 클릭으로 음식만들기 창을 다시 염. 성공하면 True."""
+    if JOB_ACT_BTN is None:
+        print("[설정 필요] JOB_ACT_BTN(직업활동 버튼 좌표)이 없어서 반복 불가")
+        return False
+    if JOB_BTN is not None:
+        print("직업 버튼 클릭")
+        human_click(JOB_BTN, jx=5, jy=5)
+        time.sleep(random.uniform(0.7, 1.2))
+    print("직업활동 버튼 클릭")
+    human_click(JOB_ACT_BTN, jx=8, jy=4)
+    t0 = time.time()
+    while running and alive and time.time() - t0 < REOPEN_WAIT:
+        if window_open(sct):
+            print("음식만들기 창 열림 확인")
+            time.sleep(random.uniform(0.5, 0.9))
+            return True
+        time.sleep(0.2)
+    print("[실패] 음식만들기 창이 안 열림 — 좌표/창 위치 확인")
+    return False
+
+
 def fill_slots(sct, templates):
     """레시피대로 재료를 요리창 슬롯에 드래그. 성공하면 True."""
     slot = 0
@@ -293,6 +337,13 @@ def worker():
                     running = False
                     continue
 
+                # 요리창이 닫혀있으면 (직업 → 직업활동으로) 다시 열기
+                if not window_open(sct):
+                    print("음식만들기 창이 닫혀있음 → 다시 열기")
+                    if not reopen_window(sct):
+                        running = False
+                        continue
+
                 if not fill_slots(sct, templates):
                     running = False
                     continue
@@ -305,7 +356,7 @@ def worker():
                     running = False
                     print("정지 (LOOP=False). 다시 하려면 F8.")
                 else:
-                    time.sleep(random.uniform(1.0, 2.2))
+                    time.sleep(random.uniform(1.2, 2.5))
     except Exception:
         import traceback
         print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
