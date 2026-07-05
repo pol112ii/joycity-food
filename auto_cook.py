@@ -81,7 +81,8 @@ JOB_ACT_BTN = (2751, 245)    # 직업 창의 "직업활동" 버튼
 GAUGE_BG_RGB = (40, 88, 47)   # 음식만들기 창의 온도계 주변 진초록 (열림 확인용)
 REOPEN_WAIT = 8         # 창 열림 최대 대기(초)
 MATCH_THRESHOLD = 28    # 아이콘 판별 기준 (평균 색 차이) — 오인식하면 낮추기
-BADGE_CUT = 10          # 칸 왼쪽 위 수량 숫자를 피해서 비교 (이만큼 잘라냄)
+BADGE_CUT = 15          # 칸 왼쪽 위 수량 숫자를 피해서 비교 (이만큼 잘라냄)
+                        # 두 자리 숫자(10~20)가 꽤 넓어서 넉넉히 잘라야 함
 COOK_TIMEOUT = 90       # 요리 1판 최대 대기(초)
 # ==============================================================================
 
@@ -182,8 +183,14 @@ def load_templates():
 
 
 def scan_inventory(sct, templates):
-    """인벤토리 전체를 스캔해서 {재료이름: [칸 중심좌표, ...]} 반환."""
+    """인벤토리 전체를 스캔.
+
+    반환: (found, min_diffs)
+      found     = {재료이름: [칸 중심좌표, ...]}
+      min_diffs = {재료이름: 전체 칸 중 가장 비슷했던 차이값}  ← 인식 실패 진단용
+    """
     found = {}
+    min_diffs = {name: 1e9 for name in templates}
     half = CELL_SIZE // 2
     for r in range(ROWS):
         for c in range(COLS):
@@ -198,11 +205,12 @@ def scan_inventory(sct, templates):
                 h = min(cell.shape[0], tpl.shape[0])
                 w = min(cell.shape[1], tpl.shape[1])
                 diff = np.abs(cell[:h, :w] - tpl[:h, :w]).mean()
+                min_diffs[name] = min(min_diffs[name], diff)
                 if diff < best_diff:
                     best_name, best_diff = name, diff
             if best_name is not None and best_diff <= MATCH_THRESHOLD:
                 found.setdefault(best_name, []).append((cx, cy))
-    return found
+    return found, min_diffs
 
 
 # ---------------------------------------------------------------- 단계별 동작
@@ -250,11 +258,14 @@ def fill_slots(sct, templates):
                 print(f"[중단] 열려있는 슬롯({NUM_SLOTS}개)을 넘음 — RECIPE 수량 확인")
                 return False
             # 드래그할 때마다 다시 스캔 (재고가 줄어 칸이 바뀌어도 따라감)
-            found = scan_inventory(sct, templates)
+            found, min_diffs = scan_inventory(sct, templates)
             if slot == 0:
                 print("인벤토리 인식:", {k: len(v) for k, v in found.items()})
             if name not in found:
                 print(f"[중단] 재료 '{name}' 를 인벤토리에서 못 찾음")
+                print(f"       가장 비슷한 칸의 차이값: {min_diffs.get(name, 0):.1f} "
+                      f"(인식 기준: {MATCH_THRESHOLD} 이하)")
+                print("       → 재료가 진짜 없으면 정상. 재료가 있는데 이러면 이 숫자를 알려주세요.")
                 return False
             src = found[name][0]
             dst = (SLOT1_CENTER[0] + slot * SLOT_PITCH_X, SLOT1_CENTER[1])
