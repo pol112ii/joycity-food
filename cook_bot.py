@@ -113,6 +113,17 @@ def hold_button(sct, button, release_when, label):
 
 def worker():
     global running, alive
+    try:
+        _worker_loop()
+    except Exception:
+        import traceback
+        print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
+        traceback.print_exc()
+        alive = False
+
+
+def _worker_loop():
+    global running, alive
     with mss.mss() as sct:
         while alive:
             if not running:
@@ -175,4 +186,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
+        traceback.print_exc()
+        input("\n엔터를 누르면 창이 닫힙니다...")
