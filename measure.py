@@ -11,13 +11,13 @@
 
 import time
 
-import mss
-import pyautogui
-
-print("측정 시작! 게임 창을 띄우고, 원하는 위치에 마우스를 올려두세요.")
-print("끝내려면 이 창에서 Ctrl+C\n")
-
 try:
+    import mss
+    import pyautogui
+
+    print("측정 시작! 게임 창을 띄우고, 원하는 위치에 마우스를 올려두세요.")
+    print("끝내려면 이 창에서 Ctrl+C\n")
+
     with mss.mss() as sct:
         while True:
             x, y = pyautogui.position()
@@ -26,3 +26,8 @@ try:
             time.sleep(0.25)
 except KeyboardInterrupt:
     print("\n\n측정 종료됨.")
+except Exception:
+    import traceback
+    print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
+    traceback.print_exc()
+    input("\n엔터를 누르면 창이 닫힙니다...")
