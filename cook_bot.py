@@ -33,6 +33,10 @@ PLUS_BTN  = (3253, 284)   # 빨간 + (온도 올리기)
 MINUS_BTN = (3330, 285)   # 파란 - (온도 내리기)
 BTN_JITTER = 9            # 클릭 위치 흔들림 반경(픽셀) — 버튼 반지름(13~14)보다 작게
 
+# 게임의 "시작" 버튼 중심 좌표 — measure.py로 측정한 값
+# None으로 바꾸면 시작 버튼을 누르지 않음 (직접 시작해야 함)
+START_BTN = (3219, 389)
+
 # 색상 (측정값)
 YELLOW_RGB = (239, 231, 107)   # 적정 구간 안의 수은(노란색)
 RED_RGB    = (189, 44, 33)     # 구간 밖의 수은(빨간색)
@@ -61,6 +65,7 @@ pyautogui.FAILSAFE = True
 
 running = False
 alive = True
+need_start = False   # F8로 켤 때 시작 버튼을 한 번 눌러야 하는 상태
 
 ZONE_CENTER = (ZONE_TOP + ZONE_BOT) / 2
 
@@ -111,6 +116,21 @@ def hold_button(sct, button, release_when, label):
     time.sleep(random.uniform(*MIN_GAP))
 
 
+def click_start():
+    """게임의 시작 버튼을 사람처럼 한 번 클릭."""
+    if START_BTN is None:
+        print("\n[알림] START_BTN 미설정 → 시작 버튼 클릭 생략. 게임에서 직접 시작하세요.")
+        return
+    x = START_BTN[0] + random.randint(-12, 12)   # 시작 버튼은 가로로 긴 사각형
+    y = START_BTN[1] + random.randint(-4, 4)
+    pyautogui.moveTo(x, y, duration=random.uniform(0.08, 0.2))
+    pyautogui.mouseDown()
+    time.sleep(random.uniform(0.06, 0.14))
+    pyautogui.mouseUp()
+    print("\n시작 버튼 클릭!")
+    time.sleep(random.uniform(0.5, 0.9))   # 게임이 반응할 시간
+
+
 def worker():
     global running, alive
     try:
@@ -123,11 +143,16 @@ def worker():
 
 
 def _worker_loop():
-    global running, alive
+    global running, alive, need_start
     with mss.mss() as sct:
         while alive:
             if not running:
                 time.sleep(0.1)
+                continue
+
+            if need_start:
+                need_start = False
+                click_start()
                 continue
 
             pos = read_pos(sct)
@@ -158,9 +183,13 @@ def _worker_loop():
 
 
 def toggle():
-    global running
+    global running, need_start
     running = not running
-    print("\n▶ 시작됨" if running else "\n⏸ 정지됨")
+    if running:
+        need_start = True   # 켤 때마다 게임의 시작 버튼부터 한 번 클릭
+        print("\n▶ 시작됨")
+    else:
+        print("\n⏸ 정지됨")
 
 
 def quit_all():
