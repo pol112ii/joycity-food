@@ -458,6 +458,7 @@ def cook_one_round(sct):
     last_pos = 0.9         # 마지막으로 본 위치 (수은 사라졌을 때 어느 쪽인지 추정용)
     last_dir = None        # 직전에 누른 방향 '+'/'-' — 연속 같은방향 누름 방지
     last_press = 0.0       # 직전에 누른 시각
+    history = []           # (시각, 위치) — 속도 계산용
 
     def do_hold(sign):
         nonlocal last_dir, last_press
@@ -466,6 +467,7 @@ def cook_one_round(sct):
         else:
             hold_toward(sct, MINUS_BTN, -1, "-"); last_dir = "-"
         last_press = time.time()
+        history.clear()    # 누른 뒤엔 속도 이력 리셋
 
     while running and alive:
         now = time.time()
@@ -497,21 +499,29 @@ def cook_one_round(sct):
         none_since = None
         last_pos = pos
 
-        # 목표 중심 기준: pos > 중심 = 차가움(아래, +필요) / pos < 중심 = 뜨거움(위, -필요)
-        if pos > ZONE_CENTER + CTRL_DEADBAND:
+        # 최근 이력으로 이동 속도 → 예측 위치(pred). "지금 위치"가 아니라 "곧 갈 위치"로 판단.
+        history.append((now, pos))
+        history[:] = [(t, p) for (t, p) in history if now - t <= VEL_WINDOW]
+        v = (pos - history[0][1]) / max(now - history[0][0], 1e-3) if len(history) >= 2 else 0.0
+        pred = pos + LOOKAHEAD * v
+
+        # 예측이 구간을 벗어날 것 같으면, "실제로 벗어나기 전에" 미리 반대로 누름.
+        #   pred가 구간 위(뜨거움, pred<ZONE_TOP) → 냉각(-)
+        #   pred가 구간 아래(차가움, pred>ZONE_BOT) → 가열(+)
+        #   pred가 구간 안 → 그냥 지켜봄 (관성으로 알아서 흐름)
+        if pred > ZONE_BOT:
             want = "+"
-        elif pos < ZONE_CENTER - CTRL_DEADBAND:
+        elif pred < ZONE_TOP:
             want = "-"
         else:
-            print(f"pos {pos:.2f} 적정 (유지)", " " * 12, end="\r")
-            last_dir = None   # 구간 안 들어오면 방향 리셋 (다음엔 어느쪽이든 바로 누름)
-            time.sleep(random.uniform(0.08, 0.18))
+            print(f"pos {pos:.2f} v{v:+.2f} pred {pred:.2f} 적정", " " * 6, end="\r")
+            last_dir = None
+            time.sleep(SAMPLE_DT)
             continue
 
-        # 방금 같은 방향을 눌렀으면, 관성으로 넘어올 시간을 주고 기다림 (연속 누름 방지).
-        # REPRESS_SEC 넘도록 여전히 같은 방향이 필요하면(관성 부족) 그때만 다시 누름.
+        # 방금 같은 방향을 눌렀으면 관성으로 넘어올 시간을 주고 기다림 (연속 누름 방지).
         if want == last_dir and now - last_press < REPRESS_SEC:
-            print(f"pos {pos:.2f} {want} 후 관성 대기중", " " * 8, end="\r")
+            print(f"pos {pos:.2f} pred {pred:.2f} {want}후 대기", " " * 6, end="\r")
             time.sleep(SAMPLE_DT)
             continue
 
