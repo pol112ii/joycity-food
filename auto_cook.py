@@ -45,7 +45,7 @@ ZONE_BOT = 0.54
 MOMENTUM_UP   = 0.06
 MOMENTUM_DOWN = 0.03
 DEADBAND   = 0.015
-MAX_HOLD   = 1.6
+MAX_HOLD   = 1.4        # 원래 1.6 → 0.2초 줄임 (되돌리려면 1.6으로)
 MIN_GAP    = (0.28, 0.65)
 SAMPLE_DT  = 0.03
 
