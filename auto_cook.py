@@ -84,7 +84,17 @@ JOB_BTN     = (2509, 1186)   # 아래 메뉴바의 "직업" 아이콘
 JOB_ACT_BTN = (2751, 245)    # 직업 창의 "직업활동" 버튼
 GAUGE_BG_RGB = (40, 88, 47)   # 음식만들기 창의 온도계 주변 진초록 (열림 확인용)
 REOPEN_WAIT = 8         # 창 열림 최대 대기(초)
-MATCH_THRESHOLD = 22    # 아이콘 판별 기준 (차이값) — 오인식하면 낮추기
+MATCH_THRESHOLD = 22    # 기본 인식 기준 (차이값) — 오인식하면 낮추기
+# 재료별로 다른 기준. 버섯은 수량(1개/3개/5개)에 따라 아이콘 렌더링이
+# 살짝 달라서 차이값이 34~39까지 나올 때가 있어 넉넉하게 잡음.
+# 반면 향신료는 비슷한 분홍 아이템이 많아 기준을 좁게 유지해야 오인식 안 함.
+MATCH_THRESHOLDS = {
+    "버섯": 45,
+}
+
+
+def threshold_for(name):
+    return MATCH_THRESHOLDS.get(name, MATCH_THRESHOLD)
 TOP_CUT = 13            # 칸 위쪽 수량 숫자 영역을 가림 (이 픽셀만큼 위 무시)
 SHIFT = 2               # 좌표 미세 어긋남 보정 (±픽셀)
 COOK_TIMEOUT = 90       # 요리 1판 최대 대기(초)
@@ -299,7 +309,7 @@ def scan_inventory(sct, templates):
                 min_diffs[name] = min(min_diffs[name], diff)
                 if diff < best_diff:
                     best_name, best_diff = name, diff
-            if best_name is not None and best_diff <= MATCH_THRESHOLD:
+            if best_name is not None and best_diff <= threshold_for(best_name):
                 found.setdefault(best_name, []).append((cx, cy))
     return found, min_diffs
 
@@ -361,7 +371,7 @@ def fill_slots(sct, templates):
             if name not in found:
                 print(f"[중단] 재료 '{name}' 를 인벤토리에서 못 찾음 (3번 재시도함)")
                 print(f"       가장 비슷한 칸의 차이값: {min_diffs.get(name, 0):.1f} "
-                      f"(인식 기준: {MATCH_THRESHOLD} 이하)")
+                      f"(인식 기준: {threshold_for(name)} 이하)")
                 print("       → 재료가 진짜 없으면 정상. 재료가 있는데 이러면 이 숫자를 알려주세요.")
                 return False
             src = found[name][0]

@@ -22,7 +22,14 @@ CELL_SIZE = 32
 SEARCH_MARGIN = 4       # 계산된 칸 위치가 어긋나도 실제 아이콘 중심을 스스로 찾는 여유 범위
                         # (너무 넓으면 옆 칸까지 침범함)
 
-MATCH_THRESHOLD = 22    # 이 값 이하면 '맞음' (새 비교 방식 기준)
+MATCH_THRESHOLD = 22    # 기본 인식 기준 (auto_cook.py와 동일하게 재료별로 다르게 적용)
+MATCH_THRESHOLDS = {
+    "버섯": 45,          # 수량(1/3/5개)에 따라 아이콘이 살짝 달라 넉넉하게
+}
+
+
+def threshold_for(name):
+    return MATCH_THRESHOLDS.get(name, MATCH_THRESHOLD)
 TOP_CUT = 13            # 위쪽 수량숫자 영역을 가림 (이 픽셀 수만큼 위를 무시)
 SHIFT = 2               # 좌표 미세 어긋남 보정 (±픽셀)
 # ======================================================================
@@ -93,7 +100,7 @@ def main():
         return
 
     print("등록된 재료:", ", ".join(templates))
-    print(f"인식 기준: 차이값 {MATCH_THRESHOLD} 이하면 '맞음'\n")
+    print(f"인식 기준: 기본 {MATCH_THRESHOLD} 이하 (재료별 예외: {MATCH_THRESHOLDS})\n")
 
     half = CELL_SIZE // 2
     # 각 재료별 최소 차이값 추적
@@ -120,7 +127,7 @@ def main():
                         bn, bd = name, diff
                     if diff < best_for[name][0]:
                         best_for[name] = (diff, (r + 1, c + 1))
-                if bd <= MATCH_THRESHOLD:
+                if bn is not None and bd <= threshold_for(bn):
                     line.append(f"{bn}({bd:.0f})")
                 else:
                     line.append(f"?({bn}:{bd:.0f})")
@@ -128,7 +135,7 @@ def main():
 
     print("\n재료별 '가장 잘 맞은 칸' 요약:")
     for name, (diff, where) in best_for.items():
-        verdict = "인식 O" if diff <= MATCH_THRESHOLD else "인식 X (기준 초과)"
+        verdict = "인식 O" if diff <= threshold_for(name) else "인식 X (기준 초과)"
         print(f"  {name:12s} 최소차이 {diff:5.1f}  위치 {where}  → {verdict}")
 
 
