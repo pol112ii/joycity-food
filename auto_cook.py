@@ -42,10 +42,11 @@ MIN_PIXELS = 3
 
 ZONE_TOP = 0.42
 ZONE_BOT = 0.54
-MOMENTUM_UP   = 0.2     # 게이지가 예상보다 훨씬 민감해서 훨씬 일찍 떼도록 크게 올림 (원래 0.06)
-MOMENTUM_DOWN = 0.16    # 원래 0.03 — 아직도 넘치면 더 키우고, 못 미치면 줄이기
-DEADBAND   = 0.015
-MAX_HOLD   = 0.7        # 게이지가 민감해서 안전하게 더 줄임 (원래 1.6 → 1.4 → 0.7)
+MOMENTUM_UP   = 0.06    # 이전 조정(0.2)이 너무 일찍 떼서 오히려 왔다갔다 자주 눌러 원복
+MOMENTUM_DOWN = 0.03
+DEADBAND   = 0.03       # 경계 여유 확대 (0.015→0.03) — 살짝만 벗어나도 바로 반응해 딱딱 누르던 것 완화
+MIN_HOLD   = 0.15       # 최소 누름 시간(초) — 0.01초 같은 순간 터치 방지
+MAX_HOLD   = 1.4        # 원래 1.6 → 0.2초 줄임 (0.7까지 줄였던 건 원복)
 MIN_GAP    = (0.28, 0.65)
 SAMPLE_DT  = 0.03
 
@@ -166,11 +167,13 @@ def hold_button(sct, button, release_when, label):
     max_hold = MAX_HOLD * random.uniform(0.8, 1.0)
     try:
         while running and alive:
-            if time.time() - t0 >= max_hold:
+            elapsed = time.time() - t0
+            if elapsed >= max_hold:
                 break
-            pos = read_pos(sct)
-            if pos is not None and release_when(pos):
-                break
+            if elapsed >= MIN_HOLD:   # 최소 시간 지나기 전엔 순간 터치처럼 바로 떼지 않음
+                pos = read_pos(sct)
+                if pos is not None and release_when(pos):
+                    break
             time.sleep(SAMPLE_DT)
     finally:
         pyautogui.mouseUp()

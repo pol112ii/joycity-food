@@ -50,11 +50,12 @@ ZONE_BOT = 0.54
 
 # 관성 보정 — 버튼을 떼도 온도가 이만큼(관 높이 비율) 더 움직인다고 보고 미리 뗌
 # (영상 분석: 가열 관성 ≈ 관의 6~7%, 냉각 관성은 그 절반 이하)
-MOMENTUM_UP   = 0.2     # 게이지가 예상보다 훨씬 민감해서 훨씬 일찍 떼도록 크게 올림 (원래 0.06)
-MOMENTUM_DOWN = 0.16    # 원래 0.03 — 아직도 넘치면 더 키우고, 못 미치면 줄이기
+MOMENTUM_UP   = 0.06    # 이전 조정(0.2)이 너무 일찍 떼서 오히려 왔다갔다 자주 눌러 원복
+MOMENTUM_DOWN = 0.03
 
-DEADBAND   = 0.015     # 구간 경계에서 이만큼은 봐줌 (경계에서 파르르 떨지 않게)
-MAX_HOLD   = 0.7       # 한 번에 최대로 꾹 누르는 시간(초) — 게이지가 민감해서 안전하게 더 줄임 (원래 1.6 → 1.4 → 0.7)
+DEADBAND   = 0.03      # 경계 여유 확대 (0.015→0.03) — 살짝만 벗어나도 바로 반응해 딱딱 누르던 것 완화
+MIN_HOLD   = 0.15      # 최소 누름 시간(초) — 0.01초 같은 순간 터치 방지
+MAX_HOLD   = 1.4       # 한 번에 최대로 꾹 누르는 시간(초) — 원래 1.6에서 0.2초 줄임 (0.7까지 줄였던 건 원복)
 MIN_GAP    = (0.28, 0.65)  # 뗀 뒤 다음 누름까지 최소 쉬는 시간 범위(초) — 연타 방지
 SAMPLE_DT  = 0.03      # 온도 확인 주기(초)
 
@@ -125,11 +126,13 @@ def hold_button(sct, button, release_when, label):
     max_hold = MAX_HOLD * random.uniform(0.8, 1.0)
     try:
         while running and alive:
-            if time.time() - t0 >= max_hold:
+            elapsed = time.time() - t0
+            if elapsed >= max_hold:
                 break
-            pos = read_pos(sct)
-            if pos is not None and release_when(pos):
-                break
+            if elapsed >= MIN_HOLD:   # 최소 시간 지나기 전엔 순간 터치처럼 바로 떼지 않음
+                pos = read_pos(sct)
+                if pos is not None and release_when(pos):
+                    break
             time.sleep(SAMPLE_DT)
     finally:
         pyautogui.mouseUp()
