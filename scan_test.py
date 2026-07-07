@@ -22,10 +22,8 @@ CELL_SIZE = 32
 SEARCH_MARGIN = 4       # 계산된 칸 위치가 어긋나도 실제 아이콘 중심을 스스로 찾는 여유 범위
                         # (너무 넓으면 옆 칸까지 침범함)
 
-MATCH_THRESHOLD = 22    # 기본 인식 기준 (auto_cook.py와 동일하게 재료별로 다르게 적용)
-MATCH_THRESHOLDS = {
-    "버섯": 45,          # 수량(1/3/5개)에 따라 아이콘이 살짝 달라 넉넉하게
-}
+MATCH_THRESHOLD = 50    # 기본 인식 기준 (auto_cook.py와 동일)
+MATCH_THRESHOLDS = {}
 
 
 def threshold_for(name):
