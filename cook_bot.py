@@ -96,7 +96,7 @@ def jittered(center):
 def hold_button(sct, button, release_when, label):
     """버튼을 꾹 누른 채 온도를 감시하다가 release_when(pos)이 참이 되면 뗌."""
     x, y = jittered(button)
-    pyautogui.moveTo(x, y, duration=random.uniform(0.04, 0.13))
+    pyautogui.moveTo(x, y, duration=random.uniform(0.16, 0.3))  # +/- 간 이동을 살짝 더 느긋하게
     pyautogui.mouseDown()
     t0 = time.time()
     max_hold = MAX_HOLD * random.uniform(0.8, 1.0)
