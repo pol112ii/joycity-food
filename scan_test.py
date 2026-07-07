@@ -20,9 +20,28 @@ COLS = 6
 ROWS = 5
 CELL_SIZE = 32
 
-MATCH_THRESHOLD = 28
-BADGE_CUT = 15
+MATCH_THRESHOLD = 22    # 이 값 이하면 '맞음' (새 비교 방식 기준)
+TOP_CUT = 13            # 위쪽 수량숫자 영역을 가림 (이 픽셀 수만큼 위를 무시)
+SHIFT = 2               # 좌표 미세 어긋남 보정 (±픽셀)
 # ======================================================================
+
+
+def match_diff(cell, tpl):
+    """cell(32x32)과 tpl(32x32)의 차이값. 위쪽 숫자영역 제외 + ±SHIFT 흔들림 보정."""
+    import numpy as np
+    m = SHIFT
+    H, W = cell.shape[:2]
+    base = cell[TOP_CUT + m:H - m, m:W - m]
+    best = 1e9
+    for dy in range(-m, m + 1):
+        for dx in range(-m, m + 1):
+            comp = tpl[TOP_CUT + m + dy:H - m + dy, m + dx:W - m + dx]
+            if comp.shape != base.shape:
+                continue
+            d = np.abs(base - comp).mean()
+            if d < best:
+                best = d
+    return best
 
 
 def main():
@@ -38,7 +57,7 @@ def main():
                 continue
             name = os.path.splitext(fn)[0]
             img = np.array(Image.open(os.path.join(folder, fn)).convert("RGB"), dtype=int)
-            templates[name] = img[BADGE_CUT:, BADGE_CUT:]
+            templates[name] = img[:CELL_SIZE, :CELL_SIZE]
 
     if not templates:
         print("[문제] items 폴더에 등록된 재료 이미지가 없습니다.")
@@ -62,20 +81,14 @@ def main():
                 shot = sct.grab({"left": cx - half, "top": cy - half,
                                  "width": CELL_SIZE, "height": CELL_SIZE})
                 cell = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
-                blank = cell.std() < 12
-                cell = cell[BADGE_CUT:, BADGE_CUT:]
                 bn, bd = None, 1e9
                 for name, tpl in templates.items():
-                    h = min(cell.shape[0], tpl.shape[0])
-                    w = min(cell.shape[1], tpl.shape[1])
-                    diff = np.abs(cell[:h, :w] - tpl[:h, :w]).mean()
+                    diff = match_diff(cell, tpl)
                     if diff < bd:
                         bn, bd = name, diff
                     if diff < best_for[name][0]:
                         best_for[name] = (diff, (r + 1, c + 1))
-                if blank:
-                    line.append("[빈칸]")
-                elif bd <= MATCH_THRESHOLD:
+                if bd <= MATCH_THRESHOLD:
                     line.append(f"{bn}({bd:.0f})")
                 else:
                     line.append(f"?({bn}:{bd:.0f})")
