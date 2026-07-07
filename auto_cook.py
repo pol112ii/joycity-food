@@ -51,11 +51,13 @@ SAMPLE_DT  = 0.03
 
 # ===================== 인벤토리 / 슬롯 (measure.py로 측정!) =====================
 CELL1_CENTER = (2843, 67)  # 인벤토리 첫 칸(왼쪽 위) 중심 좌표
-PITCH_X = 44            # 옆 칸까지 가로 간격
-PITCH_Y = 39            # 아래 칸까지 세로 간격
+# 간격은 1번칸과 6번칸(멀리 떨어진 칸) 좌표로 계산해서 오차를 최소화함
+PITCH_X = 41.6          # 옆 칸까지 가로 간격
+PITCH_Y = 41.25         # 아래 칸까지 세로 간격
 COLS = 6
 ROWS = 5
 CELL_SIZE = 32          # capture_items.py와 같은 값
+SEARCH_MARGIN = 10      # 계산된 칸 위치가 어긋나도 실제 아이콘 중심을 스스로 찾는 여유 범위
 
 SLOT1_CENTER = (3155, 87)  # 요리창 재료 슬롯 1번(맨 왼쪽 검은 칸) 중심
 SLOT_PITCH_X = 50       # 슬롯 간 가로 간격
@@ -201,6 +203,23 @@ def match_diff(cell, tpl):
     return best
 
 
+def locate_true_center(sct, nominal_cx, nominal_cy):
+    """계산된 칸 중심 근처를 넓게 캡처해서 실제 아이콘(밝은 픽셀)의 중심을 찾음."""
+    m = SEARCH_MARGIN
+    size = CELL_SIZE + 2 * m
+    nx, ny = int(round(nominal_cx)), int(round(nominal_cy))
+    shot = sct.grab({"left": nx - size // 2, "top": ny - size // 2,
+                      "width": size, "height": size})
+    img = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
+    bright = img.sum(axis=2) > 90
+    ys, xs = np.nonzero(bright)
+    if len(ys) < 20:
+        return nominal_cx, nominal_cy, False
+    true_cx = nx - size // 2 + int(xs.mean())
+    true_cy = ny - size // 2 + int(ys.mean())
+    return true_cx, true_cy, True
+
+
 def scan_inventory(sct, templates):
     """인벤토리 전체를 스캔.
 
@@ -213,8 +232,11 @@ def scan_inventory(sct, templates):
     half = CELL_SIZE // 2
     for r in range(ROWS):
         for c in range(COLS):
-            cx = CELL1_CENTER[0] + c * PITCH_X
-            cy = CELL1_CENTER[1] + r * PITCH_Y
+            nominal_cx = CELL1_CENTER[0] + c * PITCH_X
+            nominal_cy = CELL1_CENTER[1] + r * PITCH_Y
+            cx, cy, has_item = locate_true_center(sct, nominal_cx, nominal_cy)
+            if not has_item:
+                continue
             shot = sct.grab({"left": cx - half, "top": cy - half,
                              "width": CELL_SIZE, "height": CELL_SIZE})
             cell = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
