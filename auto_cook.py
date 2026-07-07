@@ -122,9 +122,34 @@ def jittered(center, r=BTN_JITTER):
             center[1] + random.randint(-r, r))
 
 
+def smooth_move_to(x, y, duration, bow=0):
+    """마우스를 여러 중간 지점을 거쳐 부드럽게 이동 (순간이동처럼 안 보이게).
+
+    pyautogui의 duration 옵션만으로는 중간 지점이 너무 성겨서 실제로는
+    툭툭 끊겨 이동하는 것처럼 보일 수 있어서, 직접 지점을 잘게 쪼개고
+    가속→감속(ease) 곡선 + 살짝 휘어진 경로(bow)로 이동시킴.
+    """
+    sx, sy = pyautogui.position()
+    dist = max(abs(x - sx), abs(y - sy), 1)
+    steps = min(max(int(duration / 0.012), 10), 80)
+    # 이동 방향에 수직인 방향으로 살짝 휘어지게 (사람 손 궤적 흉내)
+    perp_x, perp_y = -(y - sy), (x - sx)
+    plen = max((perp_x ** 2 + perp_y ** 2) ** 0.5, 1)
+    perp_x, perp_y = perp_x / plen, perp_y / plen
+    bow_amount = random.uniform(-bow, bow) if bow else 0
+    for i in range(1, steps + 1):
+        t = i / steps
+        e = t * t * (3 - 2 * t)          # ease-in-out (천천히 시작 → 빨라짐 → 천천히 도착)
+        bow_factor = 4 * e * (1 - e)     # 중간 지점에서 최대로 휘고 양끝에서는 0
+        ix = sx + (x - sx) * e + perp_x * bow_amount * bow_factor
+        iy = sy + (y - sy) * e + perp_y * bow_amount * bow_factor
+        pyautogui.moveTo(int(round(ix)), int(round(iy)))
+        time.sleep(duration / steps)
+
+
 def hold_button(sct, button, release_when, label):
     x, y = jittered(button)
-    pyautogui.moveTo(x, y, duration=random.uniform(0.16, 0.3))  # +/- 간 이동을 살짝 더 느긋하게
+    smooth_move_to(x, y, random.uniform(0.16, 0.3), bow=6)  # +/- 간 이동을 살짝 더 느긋하게
     pyautogui.mouseDown()
     t0 = time.time()
     max_hold = MAX_HOLD * random.uniform(0.8, 1.0)
@@ -145,7 +170,7 @@ def hold_button(sct, button, release_when, label):
 def human_click(point, jx=10, jy=4):
     x = point[0] + random.randint(-jx, jx)
     y = point[1] + random.randint(-jy, jy)
-    pyautogui.moveTo(x, y, duration=random.uniform(0.25, 0.45))
+    smooth_move_to(x, y, random.uniform(0.25, 0.45), bow=8)
     time.sleep(random.uniform(0.1, 0.25))
     pyautogui.mouseDown()
     time.sleep(random.uniform(0.08, 0.18))
@@ -156,15 +181,15 @@ def human_drag(src, dst):
     """사람처럼 드래그: 누르고 → 이동(중간점 경유) → 떼기. 서두르지 않음(튕김 방지)."""
     sx, sy = jittered(src, 5)
     dx, dy = jittered(dst, 5)
-    pyautogui.moveTo(sx, sy, duration=random.uniform(0.4, 0.7))
+    smooth_move_to(sx, sy, random.uniform(0.4, 0.7), bow=15)
     time.sleep(random.uniform(0.2, 0.35))
     pyautogui.mouseDown()
     time.sleep(random.uniform(0.2, 0.35))
     # 중간점 하나 거쳐서 자연스러운 곡선 흉내
     mx = (sx + dx) // 2 + random.randint(-25, 25)
     my = (sy + dy) // 2 + random.randint(-15, 15)
-    pyautogui.moveTo(mx, my, duration=random.uniform(0.28, 0.5))
-    pyautogui.moveTo(dx, dy, duration=random.uniform(0.28, 0.5))
+    smooth_move_to(mx, my, random.uniform(0.28, 0.5), bow=12)
+    smooth_move_to(dx, dy, random.uniform(0.28, 0.5), bow=12)
     time.sleep(random.uniform(0.2, 0.35))
     pyautogui.mouseUp()
     # 다음 동작까지 사람처럼 한 템포 쉬기 (드래그 연속 튕김 방지의 핵심)
