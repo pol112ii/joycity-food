@@ -43,25 +43,26 @@ MIN_PIXELS = 3
 ZONE_TOP = 0.42
 ZONE_BOT = 0.54
 
-# ----- 속도 예측 제어 파라미터 (영상 분석 기반 새 방식) -----
-# 게임 특성: + 한번 누르면 온도가 관성으로 쭉 오르고, - 누르면 쭉 내려감.
-# 그래서 "위치"만 보면 늘 늦게 반응해 목표를 지나치고 반대로 튕기며 진동함.
-# → 지금 이동 "속도"로 앞을 예측해서, 목표를 지나칠 것 같으면 미리 반대 버튼을 톡 눌러 브레이크.
-LOOKAHEAD    = 1.1      # 속도로 이 초만큼 앞을 예측 (크게=더 일찍 브레이크, 작게=늦게)
-CTRL_DEADBAND = 0.04    # 예측 위치가 목표 중심에서 이 안이면 그냥 지켜봄 (파르르 떨림 방지)
-TAP_MIN, TAP_MAX = 0.08, 0.18   # 버튼을 톡 누르는 시간(초) — 짧게
-TAP_COOLDOWN = 0.4      # 한 번 누른 뒤 이만큼은 지켜보기만 (연속 누름 방지)
-STALL_V      = 0.04     # 이 속도(/초)보다 느리면 '멈춘 것'으로 보고 필요 시 같은 방향 재차 톡
+# ----- 속도 예측 + 꾹누르기 제어 파라미터 (영상 분석 기반) -----
+# 게임 특성: 버튼을 어느 정도 "꾹" 눌러야 온도가 움직이고, 떼도 관성으로 좀 더 감.
+# 그래서 위치만 보고 목표에서 떼면 관성으로 지나쳐 진동함.
+# → 누르는 동안 이동 "속도"로 앞을 예측(pred)해서, 목표에 닿기 전에 미리 뗌.
+#   뗀 뒤엔 잠시 기다리며 관성이 멈추길 지켜보고, 필요하면 반대쪽을 다시 꾹.
+LOOKAHEAD    = 1.1      # 속도로 이 초만큼 앞을 예측 (크게=더 일찍 뗌, 작게=늦게 뗌)
+CTRL_DEADBAND = 0.04    # 위치가 목표 중심에서 이 안이면 적정으로 보고 안 누름
+HOLD_MIN     = 0.18     # 한 번 누르면 최소 이만큼은 꾹 (톡 누름 방지)
+HOLD_MAX     = 1.2      # 한 번에 최대 이만큼까지만 꾹 (넘으면 일단 떼고 재판단)
+HOLD_GAP     = (0.35, 0.75)  # 뗀 뒤 관성 지켜보며 기다리는 시간(초)
+STALL_V      = 0.04     # 이 속도(/초)보다 느리면 '멈춘 것'으로 봄
 VEL_WINDOW   = 0.22     # 속도를 이 초 구간의 위치 변화로 계산 (노이즈 완화)
 SAMPLE_DT  = 0.03
+DONE_NONE_SEC = 1.2     # 창이 닫힌 채 수은이 이만큼 안 보이면 요리 끝으로 판단
+MIN_ROUND_SEC = 6.0     # 시작 후 이 시간 전엔 '요리 끝'으로 판단 안 함 (오검출 방지)
 
 # (구 방식 파라미터 — 지금은 안 씀, 참고용)
 MOMENTUM_UP   = 0.06
 MOMENTUM_DOWN = 0.03
 DEADBAND   = 0.03
-MIN_HOLD   = 0.15
-MAX_HOLD   = 1.4
-MIN_GAP    = (0.28, 0.65)
 
 # ===================== 인벤토리 / 슬롯 (measure.py로 측정!) =====================
 CELL1_CENTER = (2843, 67)  # 인벤토리 첫 칸(왼쪽 위) 중심 좌표
@@ -194,13 +195,40 @@ def hold_button(sct, button, release_when, label):
     time.sleep(random.uniform(*MIN_GAP))
 
 
-def tap_button(button, label):
-    """버튼을 짧게 톡 누름 (속도 예측 제어용). 방향 전환할 때만 호출됨."""
+def hold_toward(sct, button, sign, label):
+    """버튼을 꾹 누르되, 속도로 예측한 위치가 목표 중심에 닿으면 미리 뗌.
+
+    sign=+1: 가열(+, 수은 상승=pos 감소) → pred가 중심 이하로 내려오면 뗌
+    sign=-1: 냉각(-, 수은 하강=pos 증가) → pred가 중심 이상으로 올라오면 뗌
+    떼고 나선 HOLD_GAP만큼 관성 지켜보며 대기.
+    """
     x, y = jittered(button)
     smooth_move_to(x, y, random.uniform(0.14, 0.26), bow=6)
     pyautogui.mouseDown()
-    time.sleep(random.uniform(TAP_MIN, TAP_MAX))
-    pyautogui.mouseUp()
+    t0 = time.time()
+    hist = []
+    try:
+        while running and alive:
+            el = time.time() - t0
+            if el >= HOLD_MAX:
+                break
+            pos = read_pos(sct)
+            now = time.time()
+            if pos is not None:
+                hist.append((now, pos))
+                hist[:] = [(t, p) for (t, p) in hist if now - t <= VEL_WINDOW]
+                v = (pos - hist[0][1]) / max(now - hist[0][0], 1e-3) if len(hist) >= 2 else 0.0
+                pred = pos + LOOKAHEAD * v
+                if el >= HOLD_MIN:
+                    if sign > 0 and pred <= ZONE_CENTER:
+                        break
+                    if sign < 0 and pred >= ZONE_CENTER:
+                        break
+            time.sleep(SAMPLE_DT)
+    finally:
+        pyautogui.mouseUp()
+    print(f"  {label} {time.time()-t0:.2f}초 꾹 누름", " " * 18)
+    time.sleep(random.uniform(*HOLD_GAP))
 
 
 def idle_wander(loops=None):
@@ -410,14 +438,14 @@ def fill_slots(sct, templates):
 
 
 def cook_one_round(sct):
-    """시작 클릭 → 속도 예측으로 온도 유지 → 요리 종료 감지. 정상 종료면 True.
+    """시작 클릭 → 속도예측 꾹누르기로 온도 유지 → 요리 종료 감지. 정상 종료면 True.
 
     제어 원리:
-      온도계는 '+한번=쭉상승 / -한번=쭉하강' 하는 관성 시스템이라, 위치만 보고
-      반응하면 늘 목표를 지나쳐 진동함. 그래서 이동 '속도'로 앞을 예측(pred)해서:
-        - pred가 목표보다 차가울 것 같으면(아래) → + 를 톡 (이미 가열중이면 안 함)
-        - pred가 목표보다 뜨거울 것 같으면(위)   → - 를 톡
-      즉 방향을 바꿀 때만 한 번 톡 누르고, 나머지 시간엔 지켜봄.
+      온도계는 버튼을 어느 정도 꾹 눌러야 움직이고 떼도 관성으로 더 가는 시스템.
+      그래서 누르는 동안 이동 '속도'로 앞을 예측(pred)해서 목표에 닿기 전에 미리 떼고,
+      뗀 뒤엔 잠시 지켜보다가 필요하면 반대쪽을 꾹. (한 방향 연속 X)
+      '요리 끝'은 수은이 안 보이는 것만으로 판단하지 않고, 음식만들기 창이 실제로
+      닫혔는지(초록 배경 사라짐)로 판단해 오검출을 막음.
     """
     print("시작 버튼 클릭!")
     human_click(START_BTN, jx=12, jy=4)
@@ -425,10 +453,9 @@ def cook_one_round(sct):
 
     t_start = time.time()
     seen = False           # 수은을 한 번이라도 봤는지
-    none_since = None      # 수은이 안 보이기 시작한 시각
-    history = []           # (시각, 위치) 최근 이력 → 속도 계산용
-    cur_dir = None         # 마지막으로 누른 방향 '+'/'-'
-    last_tap = 0.0
+    none_since = None      # 창 닫힌 채 수은이 안 보이기 시작한 시각
+    last_pos = 0.9         # 마지막으로 본 위치 (수은 사라졌을 때 어느 쪽인지 추정용)
+    last_off = 0.0         # 눈금 밖 보정용 마지막 누름 시각
 
     while running and alive:
         now = time.time()
@@ -438,56 +465,41 @@ def cook_one_round(sct):
         pos = read_pos(sct)
 
         if pos is None:
-            if seen:
+            window = window_open(sct)
+            if seen and not window and now - t_start > MIN_ROUND_SEC:
+                # 창이 실제로 닫힘 = 요리 끝
                 none_since = none_since or now
-                if now - none_since > 2.5:
+                if now - none_since > DONE_NONE_SEC:
                     print("\n요리 끝 감지!")
                     return True
+                time.sleep(SAMPLE_DT)
+                continue
+            # 창은 열려있는데 수은이 눈금 밖 = 너무 차갑거나 뜨거움 → 되돌리기
+            none_since = None
+            if now - last_off > 0.5:
+                if last_pos >= ZONE_CENTER:   # 마지막이 아래(차가움)였으면 가열
+                    hold_toward(sct, PLUS_BTN, +1, "+")
+                else:                          # 위(뜨거움)였으면 냉각
+                    hold_toward(sct, MINUS_BTN, -1, "-")
+                last_off = time.time()
             else:
-                # 아직 수은이 안 올라옴 → 가열해서 요리 시작
-                if now - last_tap > TAP_COOLDOWN:
-                    tap_button(PLUS_BTN, "+")
-                    cur_dir, last_tap = "+", time.time()
-            time.sleep(SAMPLE_DT)
+                time.sleep(SAMPLE_DT)
             continue
 
         seen = True
         none_since = None
+        last_pos = pos
 
-        # 최근 이력으로 속도(초당 위치변화) 계산
-        history.append((now, pos))
-        history[:] = [(t, p) for (t, p) in history if now - t <= VEL_WINDOW]
-        if len(history) >= 2:
-            t0, p0 = history[0]
-            v = (pos - p0) / max(now - t0, 1e-3)
+        # 목표 중심 기준: pos > 중심 = 너무 차가움(아래) / pos < 중심 = 너무 뜨거움(위)
+        if pos > ZONE_CENTER + CTRL_DEADBAND:
+            print(f"pos {pos:.2f} 낮음(차가움) → + 가열", " " * 8, end="\r")
+            hold_toward(sct, PLUS_BTN, +1, "+")
+        elif pos < ZONE_CENTER - CTRL_DEADBAND:
+            print(f"pos {pos:.2f} 높음(뜨거움) → - 냉각", " " * 8, end="\r")
+            hold_toward(sct, MINUS_BTN, -1, "-")
         else:
-            v = 0.0
-
-        pred = pos + LOOKAHEAD * v      # 관성 감안한 예측 위치
-        err = pred - ZONE_CENTER        # +면 예측상 너무 차가움(아래), -면 너무 뜨거움(위)
-
-        if now - last_tap < TAP_COOLDOWN:
-            time.sleep(SAMPLE_DT)        # 방금 눌렀으면 잠시 지켜보기
-            continue
-
-        stalled = abs(v) < STALL_V
-        print(f"pos {pos:.2f} v {v:+.2f} pred {pred:.2f} dir {cur_dir}   ", end="\r")
-
-        if err > CTRL_DEADBAND:
-            # 예측상 너무 차가움 → 가열 필요. 이미 가열 중이면 놔두되, 멈췄으면 재차 톡
-            if cur_dir != "+" or stalled:
-                tap_button(PLUS_BTN, "+")
-                cur_dir, last_tap = "+", time.time()
-            else:
-                time.sleep(SAMPLE_DT)
-        elif err < -CTRL_DEADBAND:
-            if cur_dir != "-" or stalled:
-                tap_button(MINUS_BTN, "-")
-                cur_dir, last_tap = "-", time.time()
-            else:
-                time.sleep(SAMPLE_DT)
-        else:
-            time.sleep(SAMPLE_DT)        # 예측이 목표 근처 → 그냥 지켜봄
+            print(f"pos {pos:.2f} 적정 (유지)", " " * 12, end="\r")
+            time.sleep(random.uniform(0.08, 0.18))
     return False
 
 
