@@ -14,16 +14,35 @@ import os
 
 # ===================== 설정값 (auto_cook.py와 동일) =====================
 CELL1_CENTER = (2843, 67)
-PITCH_X = 44
-PITCH_Y = 39
+PITCH_X = 41.6          # ([1,6]x - [1,1]x)/5 = (3051-2843)/5
+PITCH_Y = 41.25         # ([5,1]y - [1,1]y)/4 = (232-67)/4
 COLS = 6
 ROWS = 5
 CELL_SIZE = 32
+SEARCH_MARGIN = 10      # 계산된 칸 위치가 어긋나도 실제 아이콘 중심을 스스로 찾는 여유 범위
 
 MATCH_THRESHOLD = 22    # 이 값 이하면 '맞음' (새 비교 방식 기준)
 TOP_CUT = 13            # 위쪽 수량숫자 영역을 가림 (이 픽셀 수만큼 위를 무시)
 SHIFT = 2               # 좌표 미세 어긋남 보정 (±픽셀)
 # ======================================================================
+
+
+def locate_true_center(sct, nominal_cx, nominal_cy):
+    """계산된 칸 중심 근처를 넓게 캡처해서 실제 아이콘(밝은 픽셀)의 중심을 찾음."""
+    import numpy as np
+    m = SEARCH_MARGIN
+    size = CELL_SIZE + 2 * m
+    nx, ny = int(round(nominal_cx)), int(round(nominal_cy))
+    shot = sct.grab({"left": nx - size // 2, "top": ny - size // 2,
+                      "width": size, "height": size})
+    img = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
+    bright = img.sum(axis=2) > 90
+    ys, xs = np.nonzero(bright)
+    if len(ys) < 20:
+        return nominal_cx, nominal_cy, False
+    true_cx = nx - size // 2 + int(xs.mean())
+    true_cy = ny - size // 2 + int(ys.mean())
+    return true_cx, true_cy, True
 
 
 def match_diff(cell, tpl):
@@ -76,8 +95,12 @@ def main():
         for r in range(ROWS):
             line = []
             for c in range(COLS):
-                cx = CELL1_CENTER[0] + c * PITCH_X
-                cy = CELL1_CENTER[1] + r * PITCH_Y
+                nominal_cx = CELL1_CENTER[0] + c * PITCH_X
+                nominal_cy = CELL1_CENTER[1] + r * PITCH_Y
+                cx, cy, has_item = locate_true_center(sct, nominal_cx, nominal_cy)
+                if not has_item:
+                    line.append("[빈칸]")
+                    continue
                 shot = sct.grab({"left": cx - half, "top": cy - half,
                                  "width": CELL_SIZE, "height": CELL_SIZE})
                 cell = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
