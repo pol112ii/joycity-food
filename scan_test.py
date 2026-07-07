@@ -11,6 +11,7 @@
 """
 
 import os
+import re
 
 # ===================== 설정값 (auto_cook.py와 동일) =====================
 CELL1_CENTER = (2843, 67)
@@ -88,9 +89,10 @@ def main():
         for fn in os.listdir(folder):
             if not fn.lower().endswith(".png") or fn.startswith("cell_"):
                 continue
-            name = os.path.splitext(fn)[0]
+            stem = os.path.splitext(fn)[0]
+            base = re.sub(r"[_\-]?\d+$", "", stem) or stem   # 끝 숫자 제거해 그룹화
             img = np.array(Image.open(os.path.join(folder, fn)).convert("RGB"), dtype=int)
-            templates[name] = img[:CELL_SIZE, :CELL_SIZE]
+            templates.setdefault(base, []).append(img[:CELL_SIZE, :CELL_SIZE])
 
     if not templates:
         print("[문제] items 폴더에 등록된 재료 이미지가 없습니다.")
@@ -119,8 +121,8 @@ def main():
                                  "width": CELL_SIZE, "height": CELL_SIZE})
                 cell = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
                 bn, bd = None, 1e9
-                for name, tpl in templates.items():
-                    diff = match_diff(cell, tpl)
+                for name, tpl_list in templates.items():
+                    diff = min(match_diff(cell, tpl) for tpl in tpl_list)
                     if diff < bd:
                         bn, bd = name, diff
                     if diff < best_for[name][0]:
