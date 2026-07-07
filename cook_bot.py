@@ -52,11 +52,12 @@ ZONE_BOT = 0.54
 # 게임 특성: 버튼을 어느 정도 "꾹" 눌러야 온도가 움직이고, 떼도 관성으로 좀 더 감.
 # → 누르는 동안 이동 "속도"로 앞을 예측(pred)해서, 목표에 닿기 전에 미리 뗌.
 #   뗀 뒤엔 잠시 기다리며 관성이 멈추길 지켜보고, 필요하면 반대쪽을 다시 꾹.
-LOOKAHEAD    = 1.1      # 속도로 이 초만큼 앞을 예측 (크게=더 일찍 뗌)
+LOOKAHEAD    = 0.7      # 속도로 이 초만큼 앞을 예측 (크게=더 일찍 뗌)
 CTRL_DEADBAND = 0.04    # 위치가 목표 중심에서 이 안이면 적정으로 보고 안 누름
-HOLD_MIN     = 0.18    # 한 번 누르면 최소 이만큼은 꾹 (톡 누름 방지)
-HOLD_MAX     = 1.2     # 한 번에 최대 이만큼까지만 꾹
-HOLD_GAP     = (0.35, 0.75)  # 뗀 뒤 관성 지켜보며 기다리는 시간(초)
+HOLD_MIN     = 0.3     # 한 번 누르면 최소 이만큼은 꾹 (짧은 뽀짝 누름 방지)
+HOLD_MAX     = 1.4     # 한 번에 최대 이만큼까지만 꾹
+HOLD_GAP     = (0.6, 1.1)    # 뗀 뒤 관성 지켜보며 기다리는 시간(초)
+REPRESS_SEC  = 1.6      # 같은 방향을 다시 누르기까지 최소 간격 — 연속 누름 방지
 VEL_WINDOW   = 0.22    # 속도를 이 초 구간의 위치 변화로 계산
 SAMPLE_DT  = 0.03      # 온도 확인 주기(초)
 
@@ -218,6 +219,17 @@ def _worker_loop():
     관성 때문에 늘 목표를 지나쳐 진동하던 문제를 해결."""
     global running, alive, need_start
     last_pos = 0.9     # 마지막으로 본 위치 (수은 사라졌을 때 방향 추정용)
+    last_dir = None    # 직전에 누른 방향 — 연속 같은방향 누름 방지
+    last_press = 0.0
+
+    def do_hold(sign):
+        nonlocal last_dir, last_press
+        if sign > 0:
+            hold_toward(sct, PLUS_BTN, +1, "+"); last_dir = "+"
+        else:
+            hold_toward(sct, MINUS_BTN, -1, "-"); last_dir = "-"
+        last_press = time.time()
+
     with mss.mss() as sct:
         while alive:
             if not running:
@@ -227,32 +239,40 @@ def _worker_loop():
             if need_start:
                 need_start = False
                 click_start()
-                last_pos = 0.9
+                last_pos, last_dir, last_press = 0.9, None, 0.0
                 continue
 
+            now = time.time()
             pos = read_pos(sct)
 
             if pos is None:
                 # 수은이 눈금 밖 = 너무 차갑거나 뜨거움 → 마지막 위치로 방향 추정해 되돌리기
-                if last_pos >= ZONE_CENTER:
-                    print("수은 없음(차가움) → + 가열", " " * 12, end="\r")
-                    hold_toward(sct, PLUS_BTN, +1, "+")
+                want = "+" if last_pos >= ZONE_CENTER else "-"
+                if want != last_dir or now - last_press > REPRESS_SEC:
+                    do_hold(+1 if want == "+" else -1)
                 else:
-                    print("수은 없음(뜨거움) → - 냉각", " " * 12, end="\r")
-                    hold_toward(sct, MINUS_BTN, -1, "-")
+                    time.sleep(SAMPLE_DT)
                 continue
 
             last_pos = pos
 
             if pos > ZONE_CENTER + CTRL_DEADBAND:
-                print(f"pos {pos:.2f} 낮음(차가움) → + 가열", " " * 8, end="\r")
-                hold_toward(sct, PLUS_BTN, +1, "+")
+                want = "+"
             elif pos < ZONE_CENTER - CTRL_DEADBAND:
-                print(f"pos {pos:.2f} 높음(뜨거움) → - 냉각", " " * 8, end="\r")
-                hold_toward(sct, MINUS_BTN, -1, "-")
+                want = "-"
             else:
                 print(f"pos {pos:.2f} 적정 (유지)", " " * 12, end="\r")
+                last_dir = None
                 time.sleep(random.uniform(0.08, 0.18))
+                continue
+
+            if want == last_dir and now - last_press < REPRESS_SEC:
+                print(f"pos {pos:.2f} {want} 후 관성 대기중", " " * 8, end="\r")
+                time.sleep(SAMPLE_DT)
+                continue
+
+            print(f"pos {pos:.2f} → {want} 꾹", " " * 12, end="\r")
+            do_hold(+1 if want == "+" else -1)
 
 
 def toggle():

@@ -48,11 +48,12 @@ ZONE_BOT = 0.54
 # 그래서 위치만 보고 목표에서 떼면 관성으로 지나쳐 진동함.
 # → 누르는 동안 이동 "속도"로 앞을 예측(pred)해서, 목표에 닿기 전에 미리 뗌.
 #   뗀 뒤엔 잠시 기다리며 관성이 멈추길 지켜보고, 필요하면 반대쪽을 다시 꾹.
-LOOKAHEAD    = 1.1      # 속도로 이 초만큼 앞을 예측 (크게=더 일찍 뗌, 작게=늦게 뗌)
+LOOKAHEAD    = 0.7      # 속도로 이 초만큼 앞을 예측 (크게=더 일찍 뗌, 작게=늦게 뗌)
 CTRL_DEADBAND = 0.04    # 위치가 목표 중심에서 이 안이면 적정으로 보고 안 누름
-HOLD_MIN     = 0.18     # 한 번 누르면 최소 이만큼은 꾹 (톡 누름 방지)
-HOLD_MAX     = 1.2      # 한 번에 최대 이만큼까지만 꾹 (넘으면 일단 떼고 재판단)
-HOLD_GAP     = (0.35, 0.75)  # 뗀 뒤 관성 지켜보며 기다리는 시간(초)
+HOLD_MIN     = 0.3      # 한 번 누르면 최소 이만큼은 꾹 (짧은 뽀짝 누름 방지)
+HOLD_MAX     = 1.4      # 한 번에 최대 이만큼까지만 꾹 (넘으면 일단 떼고 재판단)
+HOLD_GAP     = (0.6, 1.1)    # 뗀 뒤 관성 지켜보며 기다리는 시간(초)
+REPRESS_SEC  = 1.6      # 같은 방향을 다시 누르기까지 최소 간격 — 연속 누름 방지의 핵심
 STALL_V      = 0.04     # 이 속도(/초)보다 느리면 '멈춘 것'으로 봄
 VEL_WINDOW   = 0.22     # 속도를 이 초 구간의 위치 변화로 계산 (노이즈 완화)
 SAMPLE_DT  = 0.03
@@ -455,7 +456,16 @@ def cook_one_round(sct):
     seen = False           # 수은을 한 번이라도 봤는지
     none_since = None      # 창 닫힌 채 수은이 안 보이기 시작한 시각
     last_pos = 0.9         # 마지막으로 본 위치 (수은 사라졌을 때 어느 쪽인지 추정용)
-    last_off = 0.0         # 눈금 밖 보정용 마지막 누름 시각
+    last_dir = None        # 직전에 누른 방향 '+'/'-' — 연속 같은방향 누름 방지
+    last_press = 0.0       # 직전에 누른 시각
+
+    def do_hold(sign):
+        nonlocal last_dir, last_press
+        if sign > 0:
+            hold_toward(sct, PLUS_BTN, +1, "+"); last_dir = "+"
+        else:
+            hold_toward(sct, MINUS_BTN, -1, "-"); last_dir = "-"
+        last_press = time.time()
 
     while running and alive:
         now = time.time()
@@ -476,12 +486,9 @@ def cook_one_round(sct):
                 continue
             # 창은 열려있는데 수은이 눈금 밖 = 너무 차갑거나 뜨거움 → 되돌리기
             none_since = None
-            if now - last_off > 0.5:
-                if last_pos >= ZONE_CENTER:   # 마지막이 아래(차가움)였으면 가열
-                    hold_toward(sct, PLUS_BTN, +1, "+")
-                else:                          # 위(뜨거움)였으면 냉각
-                    hold_toward(sct, MINUS_BTN, -1, "-")
-                last_off = time.time()
+            want = "+" if last_pos >= ZONE_CENTER else "-"
+            if want != last_dir or now - last_press > REPRESS_SEC:
+                do_hold(+1 if want == "+" else -1)
             else:
                 time.sleep(SAMPLE_DT)
             continue
@@ -490,16 +497,26 @@ def cook_one_round(sct):
         none_since = None
         last_pos = pos
 
-        # 목표 중심 기준: pos > 중심 = 너무 차가움(아래) / pos < 중심 = 너무 뜨거움(위)
+        # 목표 중심 기준: pos > 중심 = 차가움(아래, +필요) / pos < 중심 = 뜨거움(위, -필요)
         if pos > ZONE_CENTER + CTRL_DEADBAND:
-            print(f"pos {pos:.2f} 낮음(차가움) → + 가열", " " * 8, end="\r")
-            hold_toward(sct, PLUS_BTN, +1, "+")
+            want = "+"
         elif pos < ZONE_CENTER - CTRL_DEADBAND:
-            print(f"pos {pos:.2f} 높음(뜨거움) → - 냉각", " " * 8, end="\r")
-            hold_toward(sct, MINUS_BTN, -1, "-")
+            want = "-"
         else:
             print(f"pos {pos:.2f} 적정 (유지)", " " * 12, end="\r")
+            last_dir = None   # 구간 안 들어오면 방향 리셋 (다음엔 어느쪽이든 바로 누름)
             time.sleep(random.uniform(0.08, 0.18))
+            continue
+
+        # 방금 같은 방향을 눌렀으면, 관성으로 넘어올 시간을 주고 기다림 (연속 누름 방지).
+        # REPRESS_SEC 넘도록 여전히 같은 방향이 필요하면(관성 부족) 그때만 다시 누름.
+        if want == last_dir and now - last_press < REPRESS_SEC:
+            print(f"pos {pos:.2f} {want} 후 관성 대기중", " " * 8, end="\r")
+            time.sleep(SAMPLE_DT)
+            continue
+
+        print(f"pos {pos:.2f} → {want} 꾹", " " * 12, end="\r")
+        do_hold(+1 if want == "+" else -1)
     return False
 
 
