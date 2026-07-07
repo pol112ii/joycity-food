@@ -188,7 +188,13 @@ def load_templates():
 
 
 def match_diff(cell, tpl):
-    """cell(32x32)과 tpl(32x32)의 차이값. 위쪽 숫자영역 제외 + ±SHIFT 흔들림 보정."""
+    """cell(32x32)과 tpl(32x32)의 차이값.
+
+    위쪽 숫자영역 제외 + ±SHIFT 흔들림 보정 + "검은 배경이 아닌 부분(그림이
+    있는 부분)"만 골라서 비교. 칸 대부분이 검은 배경이라 배경끼리는 항상
+    똑같이 맞아떨어지는데, 그걸 그대로 평균에 넣으면 진짜 그림 차이가
+    희석돼서 완전히 다른 아이템끼리도 비슷한 점수가 나오는 문제가 있었음.
+    """
     m = SHIFT
     H, W = cell.shape[:2]
     base = cell[TOP_CUT + m:H - m, m:W - m]
@@ -198,7 +204,10 @@ def match_diff(cell, tpl):
             comp = tpl[TOP_CUT + m + dy:H - m + dy, m + dx:W - m + dx]
             if comp.shape != base.shape:
                 continue
-            d = np.abs(base - comp).mean()
+            fg = (base.sum(axis=2) > 90) | (comp.sum(axis=2) > 90)
+            if fg.sum() < 20:
+                continue   # 둘 다 거의 빈 배경이면 비교 의미 없음 → 건너뜀
+            d = np.abs(base[fg] - comp[fg]).mean()
             if d < best:
                 best = d
     return best

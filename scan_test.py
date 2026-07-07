@@ -46,7 +46,12 @@ def locate_true_center(sct, nominal_cx, nominal_cy):
 
 
 def match_diff(cell, tpl):
-    """cell(32x32)과 tpl(32x32)의 차이값. 위쪽 숫자영역 제외 + ±SHIFT 흔들림 보정."""
+    """cell(32x32)과 tpl(32x32)의 차이값.
+
+    위쪽 숫자영역 제외 + ±SHIFT 흔들림 보정 + 검은 배경이 아닌 부분(그림이
+    있는 부분)만 골라서 비교. 배경끼리는 항상 잘 맞아떨어져서 그대로 평균 내면
+    진짜 그림 차이가 희석되는 문제가 있었음.
+    """
     import numpy as np
     m = SHIFT
     H, W = cell.shape[:2]
@@ -57,7 +62,10 @@ def match_diff(cell, tpl):
             comp = tpl[TOP_CUT + m + dy:H - m + dy, m + dx:W - m + dx]
             if comp.shape != base.shape:
                 continue
-            d = np.abs(base - comp).mean()
+            fg = (base.sum(axis=2) > 90) | (comp.sum(axis=2) > 90)
+            if fg.sum() < 20:
+                continue
+            d = np.abs(base[fg] - comp[fg]).mean()
             if d < best:
                 best = d
     return best
