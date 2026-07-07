@@ -42,10 +42,10 @@ MIN_PIXELS = 3
 
 ZONE_TOP = 0.42
 ZONE_BOT = 0.54
-MOMENTUM_UP   = 0.06
-MOMENTUM_DOWN = 0.03
+MOMENTUM_UP   = 0.2     # 게이지가 예상보다 훨씬 민감해서 훨씬 일찍 떼도록 크게 올림 (원래 0.06)
+MOMENTUM_DOWN = 0.16    # 원래 0.03 — 아직도 넘치면 더 키우고, 못 미치면 줄이기
 DEADBAND   = 0.015
-MAX_HOLD   = 1.4        # 원래 1.6 → 0.2초 줄임 (되돌리려면 1.6으로)
+MAX_HOLD   = 0.7        # 게이지가 민감해서 안전하게 더 줄임 (원래 1.6 → 1.4 → 0.7)
 MIN_GAP    = (0.28, 0.65)
 SAMPLE_DT  = 0.03
 
