@@ -93,10 +93,33 @@ def jittered(center):
             cy + random.randint(-BTN_JITTER, BTN_JITTER))
 
 
+def smooth_move_to(x, y, duration, bow=0):
+    """마우스를 여러 중간 지점을 거쳐 부드럽게 이동 (순간이동처럼 안 보이게).
+
+    pyautogui의 duration 옵션만으로는 중간 지점이 너무 성겨서 실제로는
+    툭툭 끊겨 이동하는 것처럼 보일 수 있어서, 직접 지점을 잘게 쪼개고
+    가속→감속(ease) 곡선 + 살짝 휘어진 경로(bow)로 이동시킴.
+    """
+    sx, sy = pyautogui.position()
+    perp_x, perp_y = -(y - sy), (x - sx)
+    plen = max((perp_x ** 2 + perp_y ** 2) ** 0.5, 1)
+    perp_x, perp_y = perp_x / plen, perp_y / plen
+    bow_amount = random.uniform(-bow, bow) if bow else 0
+    steps = min(max(int(duration / 0.012), 10), 80)
+    for i in range(1, steps + 1):
+        t = i / steps
+        e = t * t * (3 - 2 * t)
+        bow_factor = 4 * e * (1 - e)
+        ix = sx + (x - sx) * e + perp_x * bow_amount * bow_factor
+        iy = sy + (y - sy) * e + perp_y * bow_amount * bow_factor
+        pyautogui.moveTo(int(round(ix)), int(round(iy)))
+        time.sleep(duration / steps)
+
+
 def hold_button(sct, button, release_when, label):
     """버튼을 꾹 누른 채 온도를 감시하다가 release_when(pos)이 참이 되면 뗌."""
     x, y = jittered(button)
-    pyautogui.moveTo(x, y, duration=random.uniform(0.16, 0.3))  # +/- 간 이동을 살짝 더 느긋하게
+    smooth_move_to(x, y, random.uniform(0.16, 0.3), bow=6)  # +/- 간 이동을 살짝 더 느긋하게
     pyautogui.mouseDown()
     t0 = time.time()
     max_hold = MAX_HOLD * random.uniform(0.8, 1.0)
@@ -123,7 +146,7 @@ def click_start():
         return
     x = START_BTN[0] + random.randint(-12, 12)   # 시작 버튼은 가로로 긴 사각형
     y = START_BTN[1] + random.randint(-4, 4)
-    pyautogui.moveTo(x, y, duration=random.uniform(0.08, 0.2))
+    smooth_move_to(x, y, random.uniform(0.2, 0.35), bow=8)
     pyautogui.mouseDown()
     time.sleep(random.uniform(0.06, 0.14))
     pyautogui.mouseUp()
