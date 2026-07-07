@@ -80,9 +80,9 @@ JOB_BTN     = (2509, 1186)   # 아래 메뉴바의 "직업" 아이콘
 JOB_ACT_BTN = (2751, 245)    # 직업 창의 "직업활동" 버튼
 GAUGE_BG_RGB = (40, 88, 47)   # 음식만들기 창의 온도계 주변 진초록 (열림 확인용)
 REOPEN_WAIT = 8         # 창 열림 최대 대기(초)
-MATCH_THRESHOLD = 28    # 아이콘 판별 기준 (평균 색 차이) — 오인식하면 낮추기
-BADGE_CUT = 15          # 칸 왼쪽 위 수량 숫자를 피해서 비교 (이만큼 잘라냄)
-                        # 두 자리 숫자(10~20)가 꽤 넓어서 넉넉히 잘라야 함
+MATCH_THRESHOLD = 22    # 아이콘 판별 기준 (차이값) — 오인식하면 낮추기
+TOP_CUT = 13            # 칸 위쪽 수량 숫자 영역을 가림 (이 픽셀만큼 위 무시)
+SHIFT = 2               # 좌표 미세 어긋남 보정 (±픽셀)
 COOK_TIMEOUT = 90       # 요리 1판 최대 대기(초)
 # ==============================================================================
 
@@ -180,8 +180,25 @@ def load_templates():
             continue
         name = os.path.splitext(fn)[0]
         img = np.array(Image.open(os.path.join(folder, fn)).convert("RGB"), dtype=int)
-        templates[name] = img[BADGE_CUT:, BADGE_CUT:]   # 수량 숫자 부분 제외
+        templates[name] = img[:CELL_SIZE, :CELL_SIZE]   # 전체 저장, 비교 때 위쪽만 가림
     return templates
+
+
+def match_diff(cell, tpl):
+    """cell(32x32)과 tpl(32x32)의 차이값. 위쪽 숫자영역 제외 + ±SHIFT 흔들림 보정."""
+    m = SHIFT
+    H, W = cell.shape[:2]
+    base = cell[TOP_CUT + m:H - m, m:W - m]
+    best = 1e9
+    for dy in range(-m, m + 1):
+        for dx in range(-m, m + 1):
+            comp = tpl[TOP_CUT + m + dy:H - m + dy, m + dx:W - m + dx]
+            if comp.shape != base.shape:
+                continue
+            d = np.abs(base - comp).mean()
+            if d < best:
+                best = d
+    return best
 
 
 def scan_inventory(sct, templates):
@@ -201,12 +218,9 @@ def scan_inventory(sct, templates):
             shot = sct.grab({"left": cx - half, "top": cy - half,
                              "width": CELL_SIZE, "height": CELL_SIZE})
             cell = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
-            cell = cell[BADGE_CUT:, BADGE_CUT:]
             best_name, best_diff = None, 1e9
             for name, tpl in templates.items():
-                h = min(cell.shape[0], tpl.shape[0])
-                w = min(cell.shape[1], tpl.shape[1])
-                diff = np.abs(cell[:h, :w] - tpl[:h, :w]).mean()
+                diff = match_diff(cell, tpl)
                 min_diffs[name] = min(min_diffs[name], diff)
                 if diff < best_diff:
                     best_name, best_diff = name, diff
