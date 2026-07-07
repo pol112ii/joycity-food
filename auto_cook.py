@@ -57,7 +57,8 @@ PITCH_Y = 41.25         # 아래 칸까지 세로 간격
 COLS = 6
 ROWS = 5
 CELL_SIZE = 32          # capture_items.py와 같은 값
-SEARCH_MARGIN = 10      # 계산된 칸 위치가 어긋나도 실제 아이콘 중심을 스스로 찾는 여유 범위
+SEARCH_MARGIN = 4       # 계산된 칸 위치가 어긋나도 실제 아이콘 중심을 스스로 찾는 여유 범위
+                        # (칸 간격 41px보다 너무 넓으면 옆 칸까지 침범해서 오작동하니 좁게)
 
 SLOT1_CENTER = (3155, 87)  # 요리창 재료 슬롯 1번(맨 왼쪽 검은 칸) 중심
 SLOT_PITCH_X = 50       # 슬롯 간 가로 간격
@@ -348,11 +349,17 @@ def fill_slots(sct, templates):
                 print(f"[중단] 열려있는 슬롯({NUM_SLOTS}개)을 넘음 — RECIPE 수량 확인")
                 return False
             # 드래그할 때마다 다시 스캔 (재고가 줄어 칸이 바뀌어도 따라감)
-            found, min_diffs = scan_inventory(sct, templates)
+            # 가끔 화면 캡처 타이밍이 안 좋아 한 번 실패할 수 있어 최대 3번 재시도
+            found, min_diffs = {}, {}
+            for attempt in range(3):
+                found, min_diffs = scan_inventory(sct, templates)
+                if name in found:
+                    break
+                time.sleep(random.uniform(0.2, 0.4))
             if slot == 0:
                 print("인벤토리 인식:", {k: len(v) for k, v in found.items()})
             if name not in found:
-                print(f"[중단] 재료 '{name}' 를 인벤토리에서 못 찾음")
+                print(f"[중단] 재료 '{name}' 를 인벤토리에서 못 찾음 (3번 재시도함)")
                 print(f"       가장 비슷한 칸의 차이값: {min_diffs.get(name, 0):.1f} "
                       f"(인식 기준: {MATCH_THRESHOLD} 이하)")
                 print("       → 재료가 진짜 없으면 정상. 재료가 있는데 이러면 이 숫자를 알려주세요.")
