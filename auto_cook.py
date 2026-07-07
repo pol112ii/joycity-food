@@ -167,6 +167,23 @@ def hold_button(sct, button, release_when, label):
     time.sleep(random.uniform(*MIN_GAP))
 
 
+def idle_wander(loops=None):
+    """요리 끝나고 다음 판 시작 전, 마우스를 의미 없이 잠깐 돌아다니게 함.
+
+    매번 정확히 같은 자리로만 딱딱 움직이면 기계적으로 보이니, 사람이
+    딴청 피우듯 근처를 몇 번 배회하다가 멈추게 함. 클릭은 안 함.
+    """
+    if loops is None:
+        loops = random.randint(1, 3)
+    x, y = pyautogui.position()
+    for _ in range(loops):
+        nx = x + random.randint(-100, 100)
+        ny = y + random.randint(-70, 70)
+        smooth_move_to(nx, ny, random.uniform(0.3, 0.7), bow=random.uniform(10, 30))
+        time.sleep(random.uniform(0.15, 0.5))
+        x, y = nx, ny
+
+
 def human_click(point, jx=10, jy=4):
     x = point[0] + random.randint(-jx, jx)
     y = point[1] + random.randint(-jy, jy)
@@ -440,8 +457,9 @@ def worker():
                     running = False
                     print("정지 (LOOP=False). 다시 하려면 F8.")
                 else:
-                    # 판 사이 휴식 — 사람이 결과 확인하는 정도의 텀
-                    time.sleep(random.uniform(2.5, 4.5))
+                    # 판 사이 휴식 — 마우스를 잠깐 배회시킨 뒤 쉼
+                    idle_wander()
+                    time.sleep(random.uniform(1.0, 2.0))
     except Exception:
         import traceback
         print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
