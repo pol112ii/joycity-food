@@ -225,6 +225,10 @@ def hold_toward(sct, button, sign, label):
     finally:
         pyautogui.mouseUp()
     print(f"  {label} {time.time()-t0:.2f}초 꾹 누름", " " * 18)
+    # 뗀 직후 반대 버튼 위로 미리 이동해 대기 (사람처럼) → 넘치는 순간 이동 없이 바로 누름
+    opposite = MINUS_BTN if sign > 0 else PLUS_BTN
+    ox, oy = jittered(opposite)
+    smooth_move_to(ox, oy, random.uniform(0.12, 0.22), bow=5)
     time.sleep(random.uniform(*HOLD_GAP))
 
 
