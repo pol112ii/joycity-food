@@ -344,6 +344,29 @@ def locate_true_center(sct, nominal_cx, nominal_cy):
     return true_cx, true_cy, True
 
 
+def park_mouse():
+    """스캔 전에 마우스를 인벤토리 밖 빈 곳으로 치워둠 (커서가 아이콘 덮는 것 방지)."""
+    px = int(CELL1_CENTER[0])
+    py = int(CELL1_CENTER[1] + ROWS * PITCH_Y + 55)   # 마지막 줄 아래 = 아이템 정보 패널(빈 곳)
+    smooth_move_to(px, py, random.uniform(0.15, 0.3), bow=8)
+    time.sleep(random.uniform(0.1, 0.2))
+
+
+def save_debug_scan(sct, tag="debug_scan"):
+    """인벤토리 영역 전체를 캡처해 파일로 저장 (인식 실패 원인 눈으로 확인용)."""
+    from PIL import Image as _Image
+    left = int(CELL1_CENTER[0] - PITCH_X)
+    top = int(CELL1_CENTER[1] - PITCH_Y)
+    width = int((COLS + 1) * PITCH_X)
+    height = int((ROWS + 1) * PITCH_Y)
+    shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
+    img = np.asarray(shot, dtype="uint8")[:, :, :3][:, :, ::-1]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{tag}.png")
+    _Image.fromarray(img).save(path)
+    print(f"       [진단] 인벤토리 캡처를 저장함: {path}")
+    return path
+
+
 def scan_inventory(sct, templates):
     """인벤토리 전체를 스캔.
 
@@ -351,6 +374,7 @@ def scan_inventory(sct, templates):
       found     = {재료이름: [칸 중심좌표, ...]}
       min_diffs = {재료이름: 전체 칸 중 가장 비슷했던 차이값}  ← 인식 실패 진단용
     """
+    park_mouse()
     found = {}
     min_diffs = {name: 1e9 for name in templates}
     half = CELL_SIZE // 2
@@ -434,6 +458,10 @@ def fill_slots(sct, templates):
                 print(f"       가장 비슷한 칸의 차이값: {min_diffs.get(name, 0):.1f} "
                       f"(인식 기준: {threshold_for(name)} 이하)")
                 print("       → 재료가 진짜 없으면 정상. 재료가 있는데 이러면 이 숫자를 알려주세요.")
+                try:
+                    save_debug_scan(sct)   # 봇이 실제로 본 화면을 파일로 남김 (원인 진단용)
+                except Exception:
+                    pass
                 return False
             src = found[name][0]
             dst = (SLOT1_CENTER[0] + slot * SLOT_PITCH_X, SLOT1_CENTER[1])
