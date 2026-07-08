@@ -109,7 +109,10 @@ MATCH_THRESHOLDS = {}
 def threshold_for(name):
     return MATCH_THRESHOLDS.get(name, MATCH_THRESHOLD)
 TOP_CUT = 13            # 칸 위쪽 수량 숫자 영역을 가림 (이 픽셀만큼 위 무시)
-SHIFT = 2               # 좌표 미세 어긋남 보정 (±픽셀)
+SHIFT = 2               # (구) 좌표 미세 어긋남 보정 — 지금은 ALIGN이 대체
+ALIGN = 7               # 아이콘을 상하좌우 ±이 픽셀까지 밀어보며 가장 잘맞는 위치를 찾음
+                        # (밝은픽셀 평균 방식이 숫자배지에 끌려 불안정하던 문제 해결. 창이 조금 밀려도 흡수)
+MIN_ITEM_PX = 40        # 칸 중앙에 밝은 픽셀이 이보다 적으면 빈 칸으로 봄
 COOK_TIMEOUT = 90       # 요리 1판 최대 대기(초)
 # ==============================================================================
 
@@ -301,29 +304,32 @@ def load_templates():
     return templates
 
 
-def match_diff(cell, tpl):
-    """cell(32x32)과 tpl(32x32)의 차이값.
+def match_region(region, tpl):
+    """region(=CELL_SIZE+2*ALIGN 정사각형) 안에서 tpl(32x32)을 상하좌우로 밀어가며
+    가장 잘 맞는(차이 최소) 위치를 찾아 그 차이값을 반환.
 
-    위쪽 숫자영역 제외 + ±SHIFT 흔들림 보정 + "검은 배경이 아닌 부분(그림이
-    있는 부분)"만 골라서 비교. 칸 대부분이 검은 배경이라 배경끼리는 항상
-    똑같이 맞아떨어지는데, 그걸 그대로 평균에 넣으면 진짜 그림 차이가
-    희석돼서 완전히 다른 아이템끼리도 비슷한 점수가 나오는 문제가 있었음.
+    - 위쪽 TOP_CUT 만큼은 수량 숫자라 비교에서 제외
+    - 검은 배경이 아닌 부분(그림 있는 부분)만 비교 (배경끼리 항상 맞아 희석되는 것 방지)
+    - 밝은픽셀 평균으로 중심 잡던 예전 방식은 어두운 버섯이 옆 숫자배지에 끌려
+      크롭이 흔들렸음 → 아예 여러 위치를 직접 대보고 최적을 고름
     """
-    m = SHIFT
-    H, W = cell.shape[:2]
-    base = cell[TOP_CUT + m:H - m, m:W - m]
+    tb = tpl[TOP_CUT:CELL_SIZE, :CELL_SIZE]        # 숫자영역 제외한 템플릿
+    tb_fg = tb.sum(axis=2) > 90
+    hh, ww = tb.shape[:2]
     best = 1e9
-    for dy in range(-m, m + 1):
-        for dx in range(-m, m + 1):
-            comp = tpl[TOP_CUT + m + dy:H - m + dy, m + dx:W - m + dx]
-            if comp.shape != base.shape:
+    for oy in range(0, 2 * ALIGN + 1):             # 1픽셀 단위로 정밀 탐색
+        for ox in range(0, 2 * ALIGN + 1):
+            win = region[oy + TOP_CUT:oy + CELL_SIZE, ox:ox + CELL_SIZE]
+            if win.shape[:2] != (hh, ww):
                 continue
-            fg = (base.sum(axis=2) > 90) | (comp.sum(axis=2) > 90)
+            fg = tb_fg | (win.sum(axis=2) > 90)
             if fg.sum() < 20:
-                continue   # 둘 다 거의 빈 배경이면 비교 의미 없음 → 건너뜀
-            d = np.abs(base[fg] - comp[fg]).mean()
+                continue
+            d = np.abs(win - tb)[fg].mean()
             if d < best:
                 best = d
+                if best < 4:        # 거의 완벽히 맞음 → 더 볼 필요 없음
+                    return best
     return best
 
 
@@ -377,25 +383,30 @@ def scan_inventory(sct, templates):
     park_mouse()
     found = {}
     min_diffs = {name: 1e9 for name in templates}
-    half = CELL_SIZE // 2
+    size = CELL_SIZE + 2 * ALIGN
     for r in range(ROWS):
         for c in range(COLS):
-            nominal_cx = CELL1_CENTER[0] + c * PITCH_X
-            nominal_cy = CELL1_CENTER[1] + r * PITCH_Y
-            cx, cy, has_item = locate_true_center(sct, nominal_cx, nominal_cy)
-            if not has_item:
+            nx = int(round(CELL1_CENTER[0] + c * PITCH_X))
+            ny = int(round(CELL1_CENTER[1] + r * PITCH_Y))
+            shot = sct.grab({"left": nx - size // 2, "top": ny - size // 2,
+                             "width": size, "height": size})
+            region = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
+            # 빈 칸 판정: 중앙(칸 크기) 안에 밝은 픽셀이 거의 없으면 건너뜀
+            center = region[ALIGN + TOP_CUT:ALIGN + CELL_SIZE, ALIGN:ALIGN + CELL_SIZE]
+            if int((center.sum(axis=2) > 90).sum()) < MIN_ITEM_PX:
                 continue
-            shot = sct.grab({"left": cx - half, "top": cy - half,
-                             "width": CELL_SIZE, "height": CELL_SIZE})
-            cell = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
             best_name, best_diff = None, 1e9
             for name, tpl_list in templates.items():
-                diff = min(match_diff(cell, tpl) for tpl in tpl_list)
-                min_diffs[name] = min(min_diffs[name], diff)
-                if diff < best_diff:
-                    best_name, best_diff = name, diff
+                for tpl in tpl_list:
+                    diff = match_region(region, tpl)
+                    if diff < min_diffs[name]:
+                        min_diffs[name] = diff
+                    if diff < best_diff:
+                        best_name, best_diff = name, diff
+                if best_diff < 15:      # 확실히 맞는 재료 찾음 → 나머지 템플릿 스킵 (속도)
+                    break
             if best_name is not None and best_diff <= threshold_for(best_name):
-                found.setdefault(best_name, []).append((cx, cy))
+                found.setdefault(best_name, []).append((nx, ny))
     return found, min_diffs
 
 

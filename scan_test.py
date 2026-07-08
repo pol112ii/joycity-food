@@ -30,51 +30,32 @@ MATCH_THRESHOLDS = {}
 def threshold_for(name):
     return MATCH_THRESHOLDS.get(name, MATCH_THRESHOLD)
 TOP_CUT = 13            # 위쪽 수량숫자 영역을 가림 (이 픽셀 수만큼 위를 무시)
-SHIFT = 2               # 좌표 미세 어긋남 보정 (±픽셀)
+SHIFT = 2               # (구) 좌표 미세 어긋남 보정 — 지금은 ALIGN이 대체
+ALIGN = 7               # 아이콘을 상하좌우 ±이 픽셀까지 밀어보며 가장 잘맞는 위치를 찾음
+MIN_ITEM_PX = 40        # 칸 중앙에 밝은 픽셀이 이보다 적으면 빈 칸으로 봄
 # ======================================================================
 
 
-def locate_true_center(sct, nominal_cx, nominal_cy):
-    """계산된 칸 중심 근처를 넓게 캡처해서 실제 아이콘(밝은 픽셀)의 중심을 찾음."""
+def match_region(region, tpl):
+    """region(=CELL_SIZE+2*ALIGN) 안에서 tpl을 1픽셀씩 밀어가며 최적 위치의 차이값."""
     import numpy as np
-    m = SEARCH_MARGIN
-    size = CELL_SIZE + 2 * m
-    nx, ny = int(round(nominal_cx)), int(round(nominal_cy))
-    shot = sct.grab({"left": nx - size // 2, "top": ny - size // 2,
-                      "width": size, "height": size})
-    img = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
-    bright = img.sum(axis=2) > 90
-    ys, xs = np.nonzero(bright)
-    if len(ys) < 20:
-        return nominal_cx, nominal_cy, False
-    true_cx = nx - size // 2 + int(xs.mean())
-    true_cy = ny - size // 2 + int(ys.mean())
-    return true_cx, true_cy, True
-
-
-def match_diff(cell, tpl):
-    """cell(32x32)과 tpl(32x32)의 차이값.
-
-    위쪽 숫자영역 제외 + ±SHIFT 흔들림 보정 + 검은 배경이 아닌 부분(그림이
-    있는 부분)만 골라서 비교. 배경끼리는 항상 잘 맞아떨어져서 그대로 평균 내면
-    진짜 그림 차이가 희석되는 문제가 있었음.
-    """
-    import numpy as np
-    m = SHIFT
-    H, W = cell.shape[:2]
-    base = cell[TOP_CUT + m:H - m, m:W - m]
+    tb = tpl[TOP_CUT:CELL_SIZE, :CELL_SIZE]
+    tb_fg = tb.sum(axis=2) > 90
+    hh, ww = tb.shape[:2]
     best = 1e9
-    for dy in range(-m, m + 1):
-        for dx in range(-m, m + 1):
-            comp = tpl[TOP_CUT + m + dy:H - m + dy, m + dx:W - m + dx]
-            if comp.shape != base.shape:
+    for oy in range(0, 2 * ALIGN + 1):
+        for ox in range(0, 2 * ALIGN + 1):
+            win = region[oy + TOP_CUT:oy + CELL_SIZE, ox:ox + CELL_SIZE]
+            if win.shape[:2] != (hh, ww):
                 continue
-            fg = (base.sum(axis=2) > 90) | (comp.sum(axis=2) > 90)
+            fg = tb_fg | (win.sum(axis=2) > 90)
             if fg.sum() < 20:
                 continue
-            d = np.abs(base[fg] - comp[fg]).mean()
+            d = np.abs(win - tb)[fg].mean()
             if d < best:
                 best = d
+                if best < 4:
+                    return best
     return best
 
 
@@ -102,7 +83,7 @@ def main():
     print("등록된 재료:", ", ".join(templates))
     print(f"인식 기준: 기본 {MATCH_THRESHOLD} 이하 (재료별 예외: {MATCH_THRESHOLDS})\n")
 
-    half = CELL_SIZE // 2
+    size = CELL_SIZE + 2 * ALIGN
     # 각 재료별 최소 차이값 추적
     best_for = {name: (1e9, None) for name in templates}
 
@@ -111,18 +92,18 @@ def main():
         for r in range(ROWS):
             line = []
             for c in range(COLS):
-                nominal_cx = CELL1_CENTER[0] + c * PITCH_X
-                nominal_cy = CELL1_CENTER[1] + r * PITCH_Y
-                cx, cy, has_item = locate_true_center(sct, nominal_cx, nominal_cy)
-                if not has_item:
+                nx = int(round(CELL1_CENTER[0] + c * PITCH_X))
+                ny = int(round(CELL1_CENTER[1] + r * PITCH_Y))
+                shot = sct.grab({"left": nx - size // 2, "top": ny - size // 2,
+                                 "width": size, "height": size})
+                region = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
+                center = region[ALIGN + TOP_CUT:ALIGN + CELL_SIZE, ALIGN:ALIGN + CELL_SIZE]
+                if int((center.sum(axis=2) > 90).sum()) < MIN_ITEM_PX:
                     line.append("[빈칸]")
                     continue
-                shot = sct.grab({"left": cx - half, "top": cy - half,
-                                 "width": CELL_SIZE, "height": CELL_SIZE})
-                cell = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
                 bn, bd = None, 1e9
                 for name, tpl_list in templates.items():
-                    diff = min(match_diff(cell, tpl) for tpl in tpl_list)
+                    diff = min(match_region(region, tpl) for tpl in tpl_list)
                     if diff < bd:
                         bn, bd = name, diff
                     if diff < best_for[name][0]:
