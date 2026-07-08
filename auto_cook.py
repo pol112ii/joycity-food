@@ -209,6 +209,19 @@ def _win_origin(title, ref=None):
     return cands[0]
 
 
+def _win_origin_stable(title, ref=None, tries=8, gap=0.12):
+    """창이 막 열리는 중이면 슬라이드/애니메이션으로 위치가 흔들릴 수 있어서,
+    연속으로 같은 값이 두 번 나올 때까지 기다렸다가 반환 (최대 tries번)."""
+    last = None
+    for _ in range(tries):
+        o = _win_origin(title, ref=ref)
+        if o is not None and o == last:
+            return o
+        last = o
+        time.sleep(gap)
+    return last
+
+
 def recalibrate(which="all"):
     """열려있는 창의 현재 위치를 찾아, 소속 좌표들을 기준+이동량으로 갱신."""
     global GAUGE_LEFT, GAUGE_TOP, PLUS_BTN, MINUS_BTN, START_BTN
@@ -217,7 +230,7 @@ def recalibrate(which="all"):
         return
     B = _BASE_COORD
     if which in ("all", "cook"):
-        o = _win_origin("음식만들기", ref=REF_COOK)
+        o = _win_origin_stable("음식만들기", ref=REF_COOK)
         if o:
             dx, dy = o[0] - REF_COOK[0], o[1] - REF_COOK[1]
             GAUGE_LEFT = B["GAUGE_LEFT"] + dx
@@ -227,12 +240,12 @@ def recalibrate(which="all"):
             START_BTN = (B["START_BTN"][0] + dx, B["START_BTN"][1] + dy)
             SLOT1_CENTER = (B["SLOT1_CENTER"][0] + dx, B["SLOT1_CENTER"][1] + dy)
     if which in ("all", "item"):
-        o = _win_origin("아이템", ref=REF_ITEM)
+        o = _win_origin_stable("아이템", ref=REF_ITEM)
         if o:
             dx, dy = o[0] - REF_ITEM[0], o[1] - REF_ITEM[1]
             CELL1_CENTER = (B["CELL1_CENTER"][0] + dx, B["CELL1_CENTER"][1] + dy)
     if which in ("all", "job"):
-        o = _win_origin("직업", ref=REF_JOB)
+        o = _win_origin_stable("직업", ref=REF_JOB)
         if o:
             dx, dy = o[0] - REF_JOB[0], o[1] - REF_JOB[1]
             if dx or dy:
