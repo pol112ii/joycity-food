@@ -701,6 +701,13 @@ def worker():
                     # 판 사이 휴식 — 마우스를 잠깐 배회시킨 뒤 쉼
                     idle_wander()
                     time.sleep(random.uniform(1.0, 2.0))
+    except pyautogui.FailSafeException:
+        print("\n\n[비상정지] 마우스가 화면 구석으로 이동해서 안전정지 됐어요.")
+        print("       보통 이 컴퓨터의 화면 해상도/창 위치가 좌표를 측정했던")
+        print("       컴퓨터와 달라서, 추적 안 되는 좌표(JOB_BTN 등)가 화면")
+        print("       밖으로 나갔을 때 발생해요. measure.py로 이 컴퓨터에서")
+        print("       해당 좌표를 다시 재서 코드 상단 값을 바꿔주세요.")
+        alive = False
     except Exception:
         import traceback
         print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
