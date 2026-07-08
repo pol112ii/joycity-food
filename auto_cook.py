@@ -134,6 +134,16 @@ PROFILES = {
     #     "JOB_BTN": (0, 0), "JOB_ACT_BTN": (0, 0),
     #     "REF_COOK": (0, 0), "REF_ITEM": (0, 0), "REF_JOB": (0, 0),
     # },
+    "DESKTOP-GKSLOOB": {
+        # 창 크기(355x411 / 272x402 / 256x272)가 원본 컴퓨터와 동일 —
+        # 같은 게임이 해상도와 무관하게 항상 같은 픽셀 크기로 창을 띄우는 듯.
+        "GAUGE_LEFT": 1046, "GAUGE_TOP": 132,
+        "PLUS_BTN": (1179, 284), "MINUS_BTN": (1257, 284), "START_BTN": (1152, 388),
+        "CELL1_CENTER": (772, 65), "PITCH_X": 42.2, "PITCH_Y": 41.5,
+        "SLOT1_CENTER": (1083, 86), "SLOT_PITCH_X": 51,
+        "JOB_BTN": (437, 698), "JOB_ACT_BTN": (685, 246),
+        "REF_COOK": (1013, 0), "REF_ITEM": (743, 0), "REF_JOB": (488, 0),
+    },
 }
 
 _HOSTNAME = os.environ.get("COMPUTERNAME") or __import__("socket").gethostname()
