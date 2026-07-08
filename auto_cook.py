@@ -627,20 +627,22 @@ def cook_one_round(sct):
         if now - t_start > COOK_TIMEOUT:
             print("\n[경고] 시간 초과 — 이번 판 종료 처리")
             return False
+
+        # 창이 실제로 닫혔는지 매번 먼저 확인 (수은 색이 뭔가에 남아 있어도
+        # 창이 닫혔으면 무조건 요리 끝으로 처리 — 오검출 방지의 핵심)
+        if seen and now - t_start > MIN_ROUND_SEC and not window_open(sct):
+            none_since = none_since or now
+            if now - none_since > DONE_NONE_SEC:
+                print("\n요리 끝 감지! (창 닫힘 확인)")
+                return True
+            time.sleep(SAMPLE_DT)
+            continue
+        none_since = None
+
         pos = read_pos(sct)
 
         if pos is None:
-            window = window_open(sct)
-            if seen and not window and now - t_start > MIN_ROUND_SEC:
-                # 창이 실제로 닫힘 = 요리 끝
-                none_since = none_since or now
-                if now - none_since > DONE_NONE_SEC:
-                    print("\n요리 끝 감지!")
-                    return True
-                time.sleep(SAMPLE_DT)
-                continue
             # 창은 열려있는데 수은이 눈금 밖 = 너무 차갑거나 뜨거움 → 되돌리기
-            none_since = None
             want = "+" if last_pos >= ZONE_CENTER else "-"
             if want != last_dir or now - last_press > REPRESS_SEC:
                 do_hold(+1 if want == "+" else -1)
