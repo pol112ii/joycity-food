@@ -189,17 +189,24 @@ except Exception:
     WINDOW_FOLLOW = False
 
 
-def _win_origin(title):
-    """제목이 정확히 title인 창의 (left, top). 못 찾으면 None."""
+def _win_origin(title, ref=None):
+    """제목이 정확히 title인 창의 (left, top). 못 찾으면 None.
+
+    같은 제목의 창이 여러 개 잡히면(이전 세션의 유령 창 등) ref(기준 위치)에
+    제일 가까운 걸 골라서, 엉뚱한 창을 잡아 좌표가 크게 튀는 걸 방지함.
+    """
     if not (WINDOW_FOLLOW and _gw):
         return None
     try:
-        for w in _gw.getAllWindows():
-            if w.title == title and w.width > 0:
-                return (w.left, w.top)
+        cands = [(w.left, w.top) for w in _gw.getAllWindows()
+                 if w.title == title and w.width > 0]
     except Exception:
         return None
-    return None
+    if not cands:
+        return None
+    if len(cands) > 1 and ref is not None:
+        cands.sort(key=lambda p: (p[0] - ref[0]) ** 2 + (p[1] - ref[1]) ** 2)
+    return cands[0]
 
 
 def recalibrate(which="all"):
@@ -210,7 +217,7 @@ def recalibrate(which="all"):
         return
     B = _BASE_COORD
     if which in ("all", "cook"):
-        o = _win_origin("음식만들기")
+        o = _win_origin("음식만들기", ref=REF_COOK)
         if o:
             dx, dy = o[0] - REF_COOK[0], o[1] - REF_COOK[1]
             GAUGE_LEFT = B["GAUGE_LEFT"] + dx
@@ -220,14 +227,17 @@ def recalibrate(which="all"):
             START_BTN = (B["START_BTN"][0] + dx, B["START_BTN"][1] + dy)
             SLOT1_CENTER = (B["SLOT1_CENTER"][0] + dx, B["SLOT1_CENTER"][1] + dy)
     if which in ("all", "item"):
-        o = _win_origin("아이템")
+        o = _win_origin("아이템", ref=REF_ITEM)
         if o:
             dx, dy = o[0] - REF_ITEM[0], o[1] - REF_ITEM[1]
             CELL1_CENTER = (B["CELL1_CENTER"][0] + dx, B["CELL1_CENTER"][1] + dy)
     if which in ("all", "job"):
-        o = _win_origin("직업")
+        o = _win_origin("직업", ref=REF_JOB)
         if o:
             dx, dy = o[0] - REF_JOB[0], o[1] - REF_JOB[1]
+            if dx or dy:
+                print(f"       [보정] 직업 창 위치 dx={dx} dy={dy} → "
+                      f"직업활동 버튼 {B['JOB_ACT_BTN']} → {(B['JOB_ACT_BTN'][0]+dx, B['JOB_ACT_BTN'][1]+dy)}")
             JOB_ACT_BTN = (B["JOB_ACT_BTN"][0] + dx, B["JOB_ACT_BTN"][1] + dy)
 
 ZONE_CENTER = (ZONE_TOP + ZONE_BOT) / 2
