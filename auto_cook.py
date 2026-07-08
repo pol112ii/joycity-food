@@ -353,6 +353,22 @@ def human_click(point, jx=10, jy=4):
     pyautogui.mouseUp()
 
 
+def direct_click(point, label, jx=4, jy=4):
+    """곡선(bow) 없이 직선으로 곧장 이동해서 확실하게 클릭. 좌표를 로그로 출력함.
+
+    직업/직업활동처럼 위치가 확실한 작은 버튼은 화려한 곡선 이동이 오히려
+    "누르는지 안 누르는지 애매하게" 보이게 만들어서, 이 버튼들엔 이걸 씀.
+    """
+    x = point[0] + random.randint(-jx, jx)
+    y = point[1] + random.randint(-jy, jy)
+    print(f"  {label} 클릭 → ({x}, {y})")
+    pyautogui.moveTo(x, y, duration=random.uniform(0.2, 0.35))
+    time.sleep(random.uniform(0.12, 0.2))
+    pyautogui.mouseDown()
+    time.sleep(random.uniform(0.1, 0.18))
+    pyautogui.mouseUp()
+
+
 def human_drag(src, dst):
     """사람처럼 드래그: 누르고 → 이동(중간점 경유) → 떼기. 서두르지 않음(튕김 방지)."""
     sx, sy = jittered(src, 5)
@@ -515,24 +531,22 @@ def window_open(sct):
 
 
 def reopen_window(sct):
-    """직업 → 직업활동 클릭으로 음식만들기 창을 다시 염. 성공하면 True."""
+    """직업 → 직업활동 클릭으로 음식만들기 창을 다시 염. 성공하면 True.
+
+    곡선 이동 없이 직선으로 곧장 이동해서 클릭 (direct_click) — 확실하게.
+    """
     if JOB_ACT_BTN is None:
         print("[설정 필요] JOB_ACT_BTN(직업활동 버튼 좌표)이 없어서 반복 불가")
         return False
     if JOB_BTN is not None:
-        print("직업 버튼 클릭")
-        human_click(JOB_BTN, jx=5, jy=5)
+        direct_click(JOB_BTN, "직업")
         time.sleep(random.uniform(1.2, 2.0))
-    # JOB_ACT_BTN은 추적 없이 고정 좌표 그대로 사용 (창 위치 감지가 오작동해서 뺌)
-    print("직업활동 버튼 클릭")
-    human_click(JOB_ACT_BTN, jx=8, jy=4)
+    direct_click(JOB_ACT_BTN, "직업활동")
     t0 = time.time()
     while running and alive and time.time() - t0 < REOPEN_WAIT:
-        recalibrate("cook")     # 음식만들기 창이 열리면 그 위치로 온도계 좌표 보정
         if window_open(sct):
             print("음식만들기 창 열림 확인")
             time.sleep(random.uniform(1.0, 1.8))
-            recalibrate("all")
             return True
         time.sleep(0.2)
     print("[실패] 음식만들기 창이 안 열림 — 좌표/창 위치 확인")
