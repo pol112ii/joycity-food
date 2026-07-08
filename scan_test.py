@@ -102,7 +102,11 @@ def main():
     global CELL1_CENTER
     try:
         import pygetwindow as gw
-        w = next((w for w in gw.getAllWindows() if w.title == "아이템" and w.width > 0), None)
+        cands = [w for w in gw.getAllWindows() if w.title == "아이템" and w.width > 0]
+        # 같은 제목의 창이 여러 개면(유령 창 등) 기준 위치에 제일 가까운 것을 고름
+        if len(cands) > 1:
+            cands.sort(key=lambda w: (w.left - REF_ITEM[0]) ** 2 + (w.top - REF_ITEM[1]) ** 2)
+        w = cands[0] if cands else None
         if w:
             dx, dy = w.left - REF_ITEM[0], w.top - REF_ITEM[1]
             if dx or dy:
