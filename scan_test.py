@@ -14,7 +14,9 @@ import os
 import re
 
 # ===================== 설정값 (auto_cook.py와 동일) =====================
-CELL1_CENTER = (2843, 67)
+CELL1_CENTER = (2843, 67)  # 좌표 측정 당시 컴퓨터 기준. 다른 컴퓨터에서는
+                            # 아래 창 추적으로 자동 보정됨 (창 크기가 같다면).
+REF_ITEM = (2815, 0)       # 측정 당시 "아이템" 창의 (left, top)
 PITCH_X = 41.6          # ([1,6]x - [1,1]x)/5 = (3051-2843)/5
 PITCH_Y = 41.25         # ([5,1]y - [1,1]y)/4 = (232-67)/4
 COLS = 6
@@ -82,6 +84,21 @@ def main():
 
     print("등록된 재료:", ", ".join(templates))
     print(f"인식 기준: 기본 {MATCH_THRESHOLD} 이하 (재료별 예외: {MATCH_THRESHOLDS})\n")
+
+    global CELL1_CENTER
+    try:
+        import pygetwindow as gw
+        w = next((w for w in gw.getAllWindows() if w.title == "아이템" and w.width > 0), None)
+        if w:
+            dx, dy = w.left - REF_ITEM[0], w.top - REF_ITEM[1]
+            if dx or dy:
+                CELL1_CENTER = (CELL1_CENTER[0] + dx, CELL1_CENTER[1] + dy)
+                print(f"[창 추적] '아이템' 창 위치로 좌표 보정함 (dx={dx}, dy={dy})\n")
+        else:
+            print("[창 추적] '아이템' 창을 못 찾음 — 원래 좌표 그대로 사용\n")
+    except ImportError:
+        print("[창 추적] pygetwindow 없음 — 원래 좌표 그대로 사용 "
+              "(pip install pygetwindow 하면 다른 컴퓨터에서도 자동 보정됨)\n")
 
     size = CELL_SIZE + 2 * ALIGN
     # 각 재료별 최소 차이값 추적
