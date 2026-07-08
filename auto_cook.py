@@ -114,6 +114,17 @@ ALIGN = 7               # 아이콘을 상하좌우 ±이 픽셀까지 밀어보
                         # (밝은픽셀 평균 방식이 숫자배지에 끌려 불안정하던 문제 해결. 창이 조금 밀려도 흡수)
 MIN_ITEM_PX = 40        # 칸 중앙에 밝은 픽셀이 이보다 적으면 빈 칸으로 봄
 COOK_TIMEOUT = 90       # 요리 1판 최대 대기(초)
+
+# ===================== 창 자동 추적 (창을 옮겨도 따라감) =====================
+# 각 UI가 어느 게임 창 소속인지 알고, 실행 중 그 창의 현재 위치를 찾아
+# "기준 위치에서 움직인 만큼" 좌표를 자동 보정함. → 창 옮겨도 재측정 불필요.
+# (창 크기는 그대로 두어야 함. 크기를 바꾸면 재측정 필요)
+WINDOW_FOLLOW = True    # False로 두면 창 추적 끔 (측정한 고정좌표 그대로 사용)
+# 좌표를 측정했던 당시의 각 창 왼쪽위(left, top) — pygetwindow로 확인한 값
+REF_COOK = (3088, 0)    # "음식만들기" 창
+REF_ITEM = (2815, 0)    # "아이템" 창
+REF_JOB  = (2557, 0)    # "직업" 창
+# JOB_BTN(아래 메뉴바 직업 아이콘)은 메인 게임창 소속이라 추적 안 함 — 메인창 옮기면 재측정
 # ==============================================================================
 
 pyautogui.PAUSE = 0
@@ -121,6 +132,62 @@ pyautogui.FAILSAFE = True
 
 running = False
 alive = True
+
+# 측정된 원본 좌표 보관 (창 이동 보정의 기준값). recalibrate가 여기에 delta를 더함.
+_BASE_COORD = {
+    "GAUGE_LEFT": GAUGE_LEFT, "GAUGE_TOP": GAUGE_TOP,
+    "PLUS_BTN": PLUS_BTN, "MINUS_BTN": MINUS_BTN, "START_BTN": START_BTN,
+    "SLOT1_CENTER": SLOT1_CENTER, "CELL1_CENTER": CELL1_CENTER,
+    "JOB_ACT_BTN": JOB_ACT_BTN,
+}
+
+try:
+    import pygetwindow as _gw
+except Exception:
+    _gw = None
+    WINDOW_FOLLOW = False
+
+
+def _win_origin(title):
+    """제목이 정확히 title인 창의 (left, top). 못 찾으면 None."""
+    if not (WINDOW_FOLLOW and _gw):
+        return None
+    try:
+        for w in _gw.getAllWindows():
+            if w.title == title and w.width > 0:
+                return (w.left, w.top)
+    except Exception:
+        return None
+    return None
+
+
+def recalibrate(which="all"):
+    """열려있는 창의 현재 위치를 찾아, 소속 좌표들을 기준+이동량으로 갱신."""
+    global GAUGE_LEFT, GAUGE_TOP, PLUS_BTN, MINUS_BTN, START_BTN
+    global SLOT1_CENTER, CELL1_CENTER, JOB_ACT_BTN
+    if not WINDOW_FOLLOW:
+        return
+    B = _BASE_COORD
+    if which in ("all", "cook"):
+        o = _win_origin("음식만들기")
+        if o:
+            dx, dy = o[0] - REF_COOK[0], o[1] - REF_COOK[1]
+            GAUGE_LEFT = B["GAUGE_LEFT"] + dx
+            GAUGE_TOP = B["GAUGE_TOP"] + dy
+            PLUS_BTN = (B["PLUS_BTN"][0] + dx, B["PLUS_BTN"][1] + dy)
+            MINUS_BTN = (B["MINUS_BTN"][0] + dx, B["MINUS_BTN"][1] + dy)
+            START_BTN = (B["START_BTN"][0] + dx, B["START_BTN"][1] + dy)
+            SLOT1_CENTER = (B["SLOT1_CENTER"][0] + dx, B["SLOT1_CENTER"][1] + dy)
+    if which in ("all", "item"):
+        o = _win_origin("아이템")
+        if o:
+            dx, dy = o[0] - REF_ITEM[0], o[1] - REF_ITEM[1]
+            CELL1_CENTER = (B["CELL1_CENTER"][0] + dx, B["CELL1_CENTER"][1] + dy)
+    if which in ("all", "job"):
+        o = _win_origin("직업")
+        if o:
+            dx, dy = o[0] - REF_JOB[0], o[1] - REF_JOB[1]
+            JOB_ACT_BTN = (B["JOB_ACT_BTN"][0] + dx, B["JOB_ACT_BTN"][1] + dy)
 
 ZONE_CENTER = (ZONE_TOP + ZONE_BOT) / 2
 _yellow = np.array(YELLOW_RGB, dtype=int)
@@ -433,13 +500,16 @@ def reopen_window(sct):
         print("직업 버튼 클릭")
         human_click(JOB_BTN, jx=5, jy=5)
         time.sleep(random.uniform(1.2, 2.0))
+    recalibrate("job")          # 직업 창이 열렸으니 직업활동 버튼 위치 보정
     print("직업활동 버튼 클릭")
     human_click(JOB_ACT_BTN, jx=8, jy=4)
     t0 = time.time()
     while running and alive and time.time() - t0 < REOPEN_WAIT:
+        recalibrate("cook")     # 음식만들기 창이 열리면 그 위치로 온도계 좌표 보정
         if window_open(sct):
             print("음식만들기 창 열림 확인")
             time.sleep(random.uniform(1.0, 1.8))
+            recalibrate("all")
             return True
         time.sleep(0.2)
     print("[실패] 음식만들기 창이 안 열림 — 좌표/창 위치 확인")
@@ -586,6 +656,11 @@ def worker():
             print("[주의] items 폴더에 등록된 아이콘이 없음 — capture_items.py부터 실행")
         else:
             print("등록된 재료:", ", ".join(templates))
+        if WINDOW_FOLLOW:
+            print("창 자동 추적 ON — 게임 창(음식만들기/아이템/직업)을 옮겨도 따라감")
+        else:
+            print("창 자동 추적 OFF — 창을 측정한 자리에 고정해야 함 "
+                  "(pygetwindow 설치 시 자동 ON)")
 
         with mss.mss() as sct:
             while alive:
@@ -598,6 +673,9 @@ def worker():
                     running = False
                     continue
 
+                # 창을 옮겼어도 따라가도록 현재 창 위치로 좌표 보정
+                recalibrate("all")
+
                 # 요리창이 닫혀있으면 (직업 → 직업활동으로) 다시 열기
                 if not window_open(sct):
                     print("음식만들기 창이 닫혀있음 → 다시 열기")
@@ -605,6 +683,9 @@ def worker():
                         running = False
                         continue
 
+                # 재료 넣기 직전, 인벤토리/요리창 위치 다시 보정
+                recalibrate("cook")
+                recalibrate("item")
                 if not fill_slots(sct, templates):
                     running = False
                     continue
