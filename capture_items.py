@@ -32,6 +32,22 @@ SEARCH_MARGIN = 4       # 계산된 칸 위치가 몇 픽셀 어긋나도 실제
                         # 스스로 찾아 보정하는 여유 범위(픽셀) — 너무 넓으면 옆 칸까지 침범함
 # =====================================================================
 
+# ===================== 컴퓨터별 프로필 (auto_cook.py의 PROFILES와 동일) =====================
+# 여기 등록된 컴퓨터에서 실행하면 CELL1_CENTER/PITCH_X/PITCH_Y를 자동으로 덮어씀.
+PROFILES = {
+    "DESKTOP-GKSLOOB": {
+        "CELL1_CENTER": (772, 65), "PITCH_X": 42.2, "PITCH_Y": 41.5,
+    },
+}
+_HOSTNAME = os.environ.get("COMPUTERNAME") or __import__("socket").gethostname()
+_profile = PROFILES.get(_HOSTNAME)
+if _profile:
+    globals().update(_profile)
+    print(f"[프로필] '{_HOSTNAME}' 컴퓨터 전용 좌표를 불러왔습니다.")
+else:
+    print(f"[프로필] '{_HOSTNAME}'에 등록된 프로필이 없어 기본 좌표를 씁니다.")
+# ==============================================================================
+
 
 def locate_true_center(sct, nominal_cx, nominal_cy):
     """계산된 칸 중심 근처를 넓게 캡처해서 실제 아이콘(밝은 픽셀)의 중심을 찾음.
