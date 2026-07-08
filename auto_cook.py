@@ -706,10 +706,18 @@ def worker():
     global running, alive
     try:
         templates = load_templates()
+        # items 폴더엔 다른 요리용 재료 아이콘도 섞여있을 수 있는데, 지금 RECIPE에
+        # 없는 재료는 매칭될 일이 없으니 미리 걸러냄 — 등록된 아이콘 수가 많을수록
+        # (칸마다 비교해야 할 템플릿이 늘어) 스캔이 느려지므로 이렇게 줄이는 게 이득
+        recipe_names = {name for name, _ in RECIPE}
+        templates = {k: v for k, v in templates.items() if k in recipe_names}
         if not templates:
-            print("[주의] items 폴더에 등록된 아이콘이 없음 — capture_items.py부터 실행")
+            print("[주의] items 폴더에 RECIPE 재료 아이콘이 없음 — capture_items.py부터 실행")
         else:
             print("등록된 재료:", ", ".join(templates))
+            missing = recipe_names - templates.keys()
+            if missing:
+                print(f"[주의] RECIPE에 있지만 아이콘이 없는 재료: {', '.join(missing)}")
         if WINDOW_FOLLOW:
             print("창 자동 추적 ON — 게임 창(음식만들기/아이템/직업)을 옮겨도 따라감")
         else:
