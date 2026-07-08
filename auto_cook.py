@@ -422,24 +422,25 @@ def match_region(region, tpl):
     - 밝은픽셀 평균으로 중심 잡던 예전 방식은 어두운 버섯이 옆 숫자배지에 끌려
       크롭이 흔들렸음 → 아예 여러 위치를 직접 대보고 최적을 고름
     """
+    # 225번(15x15) 오프셋을 파이썬 for문으로 하나씩 슬라이싱/비교하면 느린 CPU에서
+    # 함수 호출 오버헤드가 누적돼 눈에 띄게 느려짐 → sliding_window_view로 한 번에
+    # 벡터 연산 (결과는 기존 for문과 수학적으로 동일, 훨씬 빠름)
     tb = tpl[TOP_CUT:CELL_SIZE, :CELL_SIZE]        # 숫자영역 제외한 템플릿
     tb_fg = tb.sum(axis=2) > 90
     hh, ww = tb.shape[:2]
-    best = 1e9
-    for oy in range(0, 2 * ALIGN + 1):             # 1픽셀 단위로 정밀 탐색
-        for ox in range(0, 2 * ALIGN + 1):
-            win = region[oy + TOP_CUT:oy + CELL_SIZE, ox:ox + CELL_SIZE]
-            if win.shape[:2] != (hh, ww):
-                continue
-            fg = tb_fg | (win.sum(axis=2) > 90)
-            if fg.sum() < 20:
-                continue
-            d = np.abs(win - tb)[fg].mean()
-            if d < best:
-                best = d
-                if best < 4:        # 거의 완벽히 맞음 → 더 볼 필요 없음
-                    return best
-    return best
+    n = 2 * ALIGN + 1
+    sub = region[TOP_CUT:TOP_CUT + n + hh - 1, :n + ww - 1]
+    windows = np.lib.stride_tricks.sliding_window_view(sub, (hh, ww, 3))[:, :, 0]
+    win_fg = windows.sum(axis=-1) > 90
+    fg = tb_fg[None, None] | win_fg                # (n, n, hh, ww)
+    fg_count = fg.sum(axis=(-2, -1))                # (n, n)
+    diff_sum = np.where(fg, np.abs(windows - tb).sum(axis=-1), 0).sum(axis=(-2, -1))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        d = diff_sum / (fg_count * 3)
+    valid = fg_count >= 20
+    if not valid.any():
+        return 1e9
+    return float(np.where(valid, d, np.inf).min())
 
 
 def locate_true_center(sct, nominal_cx, nominal_cy):
@@ -506,12 +507,17 @@ def scan_inventory(sct, templates):
                 continue
             best_name, best_diff = None, 1e9
             for name, tpl_list in templates.items():
+                name_best = 1e9
                 for tpl in tpl_list:
                     diff = match_region(region, tpl)
                     if diff < min_diffs[name]:
                         min_diffs[name] = diff
                     if diff < best_diff:
                         best_name, best_diff = name, diff
+                    if diff < name_best:
+                        name_best = diff
+                    if name_best < 10:   # 이 재료의 다른 수량변형들도 이미 확실히 맞음 → 생략(속도)
+                        break
                 if best_diff < 15:      # 확실히 맞는 재료 찾음 → 나머지 템플릿 스킵 (속도)
                     break
             if best_name is not None and best_diff <= threshold_for(best_name):

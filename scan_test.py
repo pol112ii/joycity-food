@@ -43,21 +43,19 @@ def match_region(region, tpl):
     tb = tpl[TOP_CUT:CELL_SIZE, :CELL_SIZE]
     tb_fg = tb.sum(axis=2) > 90
     hh, ww = tb.shape[:2]
-    best = 1e9
-    for oy in range(0, 2 * ALIGN + 1):
-        for ox in range(0, 2 * ALIGN + 1):
-            win = region[oy + TOP_CUT:oy + CELL_SIZE, ox:ox + CELL_SIZE]
-            if win.shape[:2] != (hh, ww):
-                continue
-            fg = tb_fg | (win.sum(axis=2) > 90)
-            if fg.sum() < 20:
-                continue
-            d = np.abs(win - tb)[fg].mean()
-            if d < best:
-                best = d
-                if best < 4:
-                    return best
-    return best
+    n = 2 * ALIGN + 1
+    sub = region[TOP_CUT:TOP_CUT + n + hh - 1, :n + ww - 1]
+    windows = np.lib.stride_tricks.sliding_window_view(sub, (hh, ww, 3))[:, :, 0]
+    win_fg = windows.sum(axis=-1) > 90
+    fg = tb_fg[None, None] | win_fg
+    fg_count = fg.sum(axis=(-2, -1))
+    diff_sum = np.where(fg, np.abs(windows - tb).sum(axis=-1), 0).sum(axis=(-2, -1))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        d = diff_sum / (fg_count * 3)
+    valid = fg_count >= 20
+    if not valid.any():
+        return 1e9
+    return float(np.where(valid, d, np.inf).min())
 
 
 def main():
