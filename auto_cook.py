@@ -115,6 +115,37 @@ ALIGN = 7               # 아이콘을 상하좌우 ±이 픽셀까지 밀어보
 MIN_ITEM_PX = 40        # 칸 중앙에 밝은 픽셀이 이보다 적으면 빈 칸으로 봄
 COOK_TIMEOUT = 90       # 요리 1판 최대 대기(초)
 
+# ===================== 컴퓨터별 프로필 (다른 PC에서 자동으로 맞는 좌표 불러오기) =====================
+# 컴퓨터마다 화면 해상도/배율이 다르면 좌표가 전부 어긋남. 여기 컴퓨터 이름을 키로
+# 등록해두면, 그 컴퓨터에서 실행할 때 위 좌표들을 전부 자동으로 덮어씀.
+# REF_COOK/REF_ITEM/REF_JOB도 "그 컴퓨터에서 측정할 당시" 각 창 위치를 넣어야
+# 이후 실행마다 창을 옮겨도 자동 추적이 이어짐(창 추적 섹션 참고).
+#
+# 새 컴퓨터 등록하는 법:
+#   1. cmd에서 echo %COMPUTERNAME% 로 이름 확인
+#   2. measure.py로 이 컴퓨터에서 좌표 전부 재측정
+#   3. 아래에 그 이름을 키로 새 항목 추가
+PROFILES = {
+    # "DESKTOP-XXXXXXX": {
+    #     "GAUGE_LEFT": 0, "GAUGE_TOP": 0,
+    #     "PLUS_BTN": (0, 0), "MINUS_BTN": (0, 0), "START_BTN": (0, 0),
+    #     "CELL1_CENTER": (0, 0), "PITCH_X": 0.0, "PITCH_Y": 0.0,
+    #     "SLOT1_CENTER": (0, 0), "SLOT_PITCH_X": 0,
+    #     "JOB_BTN": (0, 0), "JOB_ACT_BTN": (0, 0),
+    #     "REF_COOK": (0, 0), "REF_ITEM": (0, 0), "REF_JOB": (0, 0),
+    # },
+}
+
+_HOSTNAME = os.environ.get("COMPUTERNAME") or __import__("socket").gethostname()
+_profile = PROFILES.get(_HOSTNAME)
+if _profile:
+    globals().update(_profile)
+    print(f"[프로필] '{_HOSTNAME}' 컴퓨터 전용 좌표를 불러왔습니다.")
+else:
+    print(f"[프로필] '{_HOSTNAME}'에 등록된 프로필이 없어 기본 좌표를 씁니다. "
+          f"(다른 컴퓨터라면 PROFILES에 등록 필요)")
+# ==============================================================================
+
 # ===================== 창 자동 추적 (창을 옮겨도 따라감) =====================
 # 각 UI가 어느 게임 창 소속인지 알고, 실행 중 그 창의 현재 위치를 찾아
 # "기준 위치에서 움직인 만큼" 좌표를 자동 보정함. → 창 옮겨도 재측정 불필요.
