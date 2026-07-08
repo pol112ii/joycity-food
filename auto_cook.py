@@ -134,7 +134,7 @@ PROFILES = {
     #     "JOB_BTN": (0, 0), "JOB_ACT_BTN": (0, 0),
     #     "REF_COOK": (0, 0), "REF_ITEM": (0, 0), "REF_JOB": (0, 0),
     # },
-    "DESKTOP-GKSLOOB": {
+    "DESKTOP-GKSL0QB": {
         # 창 크기(355x411 / 272x402 / 256x272)가 원본 컴퓨터와 동일 —
         # 같은 게임이 해상도와 무관하게 항상 같은 픽셀 크기로 창을 띄우는 듯.
         "GAUGE_LEFT": 1046, "GAUGE_TOP": 132,
