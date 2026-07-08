@@ -13,25 +13,10 @@
 import os
 import re
 
-# ===================== 설정값 (auto_cook.py와 동일) =====================
-CELL1_CENTER = (2843, 67)  # 좌표 측정 당시 컴퓨터 기준. 다른 컴퓨터에서는
-                            # 아래 창 추적으로 자동 보정됨 (창 크기가 같다면).
-REF_ITEM = (2815, 0)       # 측정 당시 "아이템" 창의 (left, top)
-PITCH_X = 41.6          # ([1,6]x - [1,1]x)/5 = (3051-2843)/5
-PITCH_Y = 41.25         # ([5,1]y - [1,1]y)/4 = (232-67)/4
-
-# 컴퓨터별 프로필 (auto_cook.py의 PROFILES와 동일) — 등록된 컴퓨터면 위 값을 덮어씀
-PROFILES = {
-    "DESKTOP-GKSL0QB": {
-        "CELL1_CENTER": (772, 65), "PITCH_X": 42.2, "PITCH_Y": 41.5,
-        "REF_ITEM": (743, 0),
-    },
-}
-_HOSTNAME = os.environ.get("COMPUTERNAME") or __import__("socket").gethostname()
-_profile = PROFILES.get(_HOSTNAME)
-if _profile:
-    globals().update(_profile)
-    print(f"[프로필] '{_HOSTNAME}' 컴퓨터 전용 좌표를 불러왔습니다.")
+# ===================== 설정값 (이 컴퓨터 좌표 고정, auto_cook.py와 동일) =====================
+CELL1_CENTER = (1176, 77)
+PITCH_X = 52.4
+PITCH_Y = 52.75
 
 COLS = 6
 ROWS = 5
@@ -98,25 +83,6 @@ def main():
 
     print("등록된 재료:", ", ".join(templates))
     print(f"인식 기준: 기본 {MATCH_THRESHOLD} 이하 (재료별 예외: {MATCH_THRESHOLDS})\n")
-
-    global CELL1_CENTER
-    try:
-        import pygetwindow as gw
-        cands = [w for w in gw.getAllWindows() if w.title == "아이템" and w.width > 0]
-        # 같은 제목의 창이 여러 개면(유령 창 등) 기준 위치에 제일 가까운 것을 고름
-        if len(cands) > 1:
-            cands.sort(key=lambda w: (w.left - REF_ITEM[0]) ** 2 + (w.top - REF_ITEM[1]) ** 2)
-        w = cands[0] if cands else None
-        if w:
-            dx, dy = w.left - REF_ITEM[0], w.top - REF_ITEM[1]
-            if dx or dy:
-                CELL1_CENTER = (CELL1_CENTER[0] + dx, CELL1_CENTER[1] + dy)
-                print(f"[창 추적] '아이템' 창 위치로 좌표 보정함 (dx={dx}, dy={dy})\n")
-        else:
-            print("[창 추적] '아이템' 창을 못 찾음 — 원래 좌표 그대로 사용\n")
-    except ImportError:
-        print("[창 추적] pygetwindow 없음 — 원래 좌표 그대로 사용 "
-              "(pip install pygetwindow 하면 다른 컴퓨터에서도 자동 보정됨)\n")
 
     size = CELL_SIZE + 2 * ALIGN
     # 각 재료별 최소 차이값 추적

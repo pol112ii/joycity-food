@@ -18,35 +18,16 @@
 
 import os
 
-# ===================== 설정값 (measure.py로 측정) =====================
-CELL1_CENTER = (2843, 67)  # 인벤토리 첫 칸(왼쪽 위) 중심 좌표
-# 간격은 1번칸과 6번칸(멀리 떨어진 칸) 좌표로 계산해서 오차를 최소화함:
-#   PITCH_X = ([1,6]중심x - [1,1]중심x) / 5 = (3051-2843)/5
-#   PITCH_Y = ([5,1]중심y - [1,1]중심y) / 4 = (232-67)/4
-PITCH_X = 41.6          # 옆 칸 중심까지 가로 간격
-PITCH_Y = 41.25         # 아래 칸 중심까지 세로 간격
+# ===================== 설정값 (이 컴퓨터 좌표 고정) =====================
+CELL1_CENTER = (1176, 77)  # 인벤토리 첫 칸(왼쪽 위) 중심 좌표
+PITCH_X = 52.4          # 옆 칸 중심까지 가로 간격
+PITCH_Y = 52.75         # 아래 칸 중심까지 세로 간격
 COLS = 6                # 가로 칸 수
 ROWS = 5                # 세로 줄 수
 CELL_SIZE = 32          # 캡처할 정사각형 크기(픽셀) — 칸보다 살짝 작게
 SEARCH_MARGIN = 4       # 계산된 칸 위치가 몇 픽셀 어긋나도 실제 아이콘 중심을
                         # 스스로 찾아 보정하는 여유 범위(픽셀) — 너무 넓으면 옆 칸까지 침범함
 # =====================================================================
-
-# ===================== 컴퓨터별 프로필 (auto_cook.py의 PROFILES와 동일) =====================
-# 여기 등록된 컴퓨터에서 실행하면 CELL1_CENTER/PITCH_X/PITCH_Y를 자동으로 덮어씀.
-PROFILES = {
-    "DESKTOP-GKSL0QB": {
-        "CELL1_CENTER": (772, 65), "PITCH_X": 42.2, "PITCH_Y": 41.5,
-    },
-}
-_HOSTNAME = os.environ.get("COMPUTERNAME") or __import__("socket").gethostname()
-_profile = PROFILES.get(_HOSTNAME)
-if _profile:
-    globals().update(_profile)
-    print(f"[프로필] '{_HOSTNAME}' 컴퓨터 전용 좌표를 불러왔습니다.")
-else:
-    print(f"[프로필] '{_HOSTNAME}'에 등록된 프로필이 없어 기본 좌표를 씁니다.")
-# ==============================================================================
 
 
 def locate_true_center(sct, nominal_cx, nominal_cy):
