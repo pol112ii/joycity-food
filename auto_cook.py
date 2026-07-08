@@ -223,9 +223,14 @@ def _win_origin_stable(title, ref=None, tries=8, gap=0.12):
 
 
 def recalibrate(which="all"):
-    """열려있는 창의 현재 위치를 찾아, 소속 좌표들을 기준+이동량으로 갱신."""
+    """열려있는 창의 현재 위치를 찾아, 소속 좌표들을 기준+이동량으로 갱신.
+
+    JOB_ACT_BTN(직업활동 버튼)은 창 위치 추적에서 제외함 — '직업' 창 감지가
+    엉뚱한 값을 반환하는 문제가 있어, 고정 좌표를 그대로 씀(직업 버튼 누르고
+    바로 그 고정 좌표로 이동해 클릭).
+    """
     global GAUGE_LEFT, GAUGE_TOP, PLUS_BTN, MINUS_BTN, START_BTN
-    global SLOT1_CENTER, CELL1_CENTER, JOB_ACT_BTN
+    global SLOT1_CENTER, CELL1_CENTER
     if not WINDOW_FOLLOW:
         return
     B = _BASE_COORD
@@ -244,14 +249,6 @@ def recalibrate(which="all"):
         if o:
             dx, dy = o[0] - REF_ITEM[0], o[1] - REF_ITEM[1]
             CELL1_CENTER = (B["CELL1_CENTER"][0] + dx, B["CELL1_CENTER"][1] + dy)
-    if which in ("all", "job"):
-        o = _win_origin_stable("직업", ref=REF_JOB)
-        if o:
-            dx, dy = o[0] - REF_JOB[0], o[1] - REF_JOB[1]
-            if dx or dy:
-                print(f"       [보정] 직업 창 위치 dx={dx} dy={dy} → "
-                      f"직업활동 버튼 {B['JOB_ACT_BTN']} → {(B['JOB_ACT_BTN'][0]+dx, B['JOB_ACT_BTN'][1]+dy)}")
-            JOB_ACT_BTN = (B["JOB_ACT_BTN"][0] + dx, B["JOB_ACT_BTN"][1] + dy)
 
 ZONE_CENTER = (ZONE_TOP + ZONE_BOT) / 2
 _yellow = np.array(YELLOW_RGB, dtype=int)
@@ -564,7 +561,7 @@ def reopen_window(sct):
         print("직업 버튼 클릭")
         human_click(JOB_BTN, jx=5, jy=5)
         time.sleep(random.uniform(1.2, 2.0))
-    recalibrate("job")          # 직업 창이 열렸으니 직업활동 버튼 위치 보정
+    # JOB_ACT_BTN은 추적 없이 고정 좌표 그대로 사용 (창 위치 감지가 오작동해서 뺌)
     print("직업활동 버튼 클릭")
     human_click(JOB_ACT_BTN, jx=8, jy=4)
     t0 = time.time()
