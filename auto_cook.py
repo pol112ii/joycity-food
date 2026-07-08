@@ -522,12 +522,18 @@ _bg = np.array(GAUGE_BG_RGB, dtype=int)
 
 
 def window_open(sct):
-    """음식만들기 창이 열려있는지 — 온도계 영역에 특유의 진초록이 충분히 보이는지로 판단."""
-    region = {"top": GAUGE_TOP, "left": GAUGE_LEFT,
-              "width": GAUGE_WIDTH, "height": GAUGE_HEIGHT}
+    """음식만들기 창이 열려있는지 — 온도계 관 '바로 위'의 배경이 보이는지로 판단.
+
+    관 자체(GAUGE_TOP~+HEIGHT)를 보면 요리 중엔 수은(빨강/노랑)이 채우고 있어서
+    배경이 안 보이는 게 정상이라, 요리 중인데 "닫혔다"고 오판하게 됨.
+    그래서 수은이 절대 닿지 않는, 관 바로 위쪽 얇은 띠만 확인함 — 여긴 창이
+    열려있는 한 항상 배경색이어야 하고, 창이 실제로 닫힐 때만 사라짐.
+    """
+    region = {"top": max(GAUGE_TOP - 22, 0), "left": GAUGE_LEFT,
+              "width": GAUGE_WIDTH, "height": 14}
     img = np.asarray(sct.grab(region), dtype=int)[:, :, :3][:, :, ::-1]
     near_bg = np.all(np.abs(img - _bg) <= 30, axis=-1)
-    return near_bg.mean() > 0.25
+    return near_bg.mean() > 0.5
 
 
 def reopen_window(sct):
