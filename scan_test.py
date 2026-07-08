@@ -22,7 +22,7 @@ PITCH_Y = 41.25         # ([5,1]y - [1,1]y)/4 = (232-67)/4
 
 # 컴퓨터별 프로필 (auto_cook.py의 PROFILES와 동일) — 등록된 컴퓨터면 위 값을 덮어씀
 PROFILES = {
-    "DESKTOP-GKSLOOB": {
+    "DESKTOP-GKSL0QB": {
         "CELL1_CENTER": (772, 65), "PITCH_X": 42.2, "PITCH_Y": 41.5,
         "REF_ITEM": (743, 0),
     },

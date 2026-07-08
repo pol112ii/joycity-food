@@ -35,7 +35,7 @@ SEARCH_MARGIN = 4       # 계산된 칸 위치가 몇 픽셀 어긋나도 실제
 # ===================== 컴퓨터별 프로필 (auto_cook.py의 PROFILES와 동일) =====================
 # 여기 등록된 컴퓨터에서 실행하면 CELL1_CENTER/PITCH_X/PITCH_Y를 자동으로 덮어씀.
 PROFILES = {
-    "DESKTOP-GKSLOOB": {
+    "DESKTOP-GKSL0QB": {
         "CELL1_CENTER": (772, 65), "PITCH_X": 42.2, "PITCH_Y": 41.5,
     },
 }
