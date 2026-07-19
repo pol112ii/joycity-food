@@ -932,10 +932,39 @@ def cook_one_round(sct):
 
 # ---------------------------------------------------------------- 텔레그램 알림
 
+# 일부 컴퓨터는 백신/보안 프로그램이 HTTPS를 중간 검사하면서 자체 인증서를
+# 끼워넣어 파이썬의 인증서 검증이 실패함 (CERTIFICATE_VERIFY_FAILED).
+# → truststore가 설치돼 있으면 윈도우 인증서 저장소를 그대로 써서 해결하고
+#   (py -m pip install truststore 권장), 그래도 실패하면 알림 전송에 한해
+#   검증 없이 보냄 (게임 알림이라 민감정보 없음. 다른 통신엔 영향 없음).
+import ssl as _ssl
+try:
+    import truststore as _truststore
+    _truststore.inject_into_ssl()
+except Exception:
+    pass
+_tg_ctx = None   # None = 기본 검증. 검증 실패를 한 번 겪으면 무검증으로 전환
+
+
+def _tg_urlopen(url_or_req, data=None, timeout=30):
+    global _tg_ctx
+    try:
+        return urllib.request.urlopen(url_or_req, data=data, timeout=timeout,
+                                      context=_tg_ctx)
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", None)
+        if _tg_ctx is None and isinstance(reason, _ssl.SSLCertVerificationError):
+            print("  (텔레그램: 보안프로그램의 HTTPS 검사 감지 — 인증서 검증 생략 모드로 전환)")
+            _tg_ctx = _ssl._create_unverified_context()
+            return urllib.request.urlopen(url_or_req, data=data, timeout=timeout,
+                                          context=_tg_ctx)
+        raise
+
+
 def _send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = urllib.parse.urlencode({"chat_id": TELEGRAM_CHAT_ID, "text": text}).encode()
-    urllib.request.urlopen(url, data=data, timeout=10)
+    _tg_urlopen(url, data=data, timeout=10)
 
 
 def _capture_screen_jpeg():
@@ -979,7 +1008,7 @@ def _send_telegram_photo(caption, jpeg_bytes):
     ])
     req = urllib.request.Request(url, data=body)
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-    urllib.request.urlopen(req, timeout=30)
+    _tg_urlopen(req, timeout=30)
 
 
 def notify(text, key=None, wait=False, photo=False):
