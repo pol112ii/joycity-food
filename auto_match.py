@@ -105,12 +105,19 @@ BTN_JITTER = 9
 AUTO_RESTART_SEC = 60    # 오류로 멈췄을 때 이 시간 뒤 자동 재시작
 
 # ----- 마우스를 사람처럼 (여기 숫자만 만지면 됨) -----
-MOUSE_SPEED = 1.3        # 클수록 느리게 움직임 (1.0=기본). 눈으로 보고 조정하세요.
-                         # 올리면 더 사람같지만 판이 길어짐. 시뮬레이션 실측:
-                         #   1.0 → 판당 32~39초 / 1.2 → 42~46초 / 1.3 → 44~49초
-                         # 제한시간(50~60초)을 넘겨 실패하면 낮출 것.
+# ★ 여기 하나만 만지면 전체 속도가 바뀝니다 (모든 이동/클릭에 적용됨).
+#   일부러 느린 쪽에서 시작합니다 — 보면서 0.1씩 줄여가며 맞추세요.
+#   참고: 영상 속 사람은 클릭당 약 0.5초 페이스였습니다.
+#   1.0 → 클릭당 약 0.55초 (사람보다 조금 빠름)
+#   1.3 → 클릭당 약 0.70초
+#   1.6 → 클릭당 약 0.85초 (사람보다 확실히 느긋함)
+#   느릴수록 판이 길어지므로, 제한시간을 넘겨 판을 못 끝내면 낮추세요.
+MOUSE_SPEED = 1.6
 THINK_CHANCE = 0.22      # 카드를 고르기 전에 잠깐 '어디 눌러볼까' 하고 멈추는 빈도
 THINK_SEC = (0.25, 0.65) # 그때 멈추는 시간(초)
+LOOK_SEC = (0.15, 0.40)  # 카드가 뒤집힌 뒤 '무슨 그림인지 보는' 시간.
+                         # 이게 없으면 카드가 뒤집히자마자 커서가 홱 빠져나가서
+                         # 기계처럼 보임 (특히 2장째를 연 직후)
 OVERSHOOT_CHANCE = 0.28  # 목표를 살짝 지나쳤다가 되돌아오는 빈도 (사람 손 특징)
 BOW_RANGE = (9, 22)      # 이동 경로가 휘는 정도 (클수록 크게 휨)
 
@@ -169,8 +176,8 @@ def smooth_move_to(x, y, duration, bow=0):
 def human_click(point, jx=10, jy=4):
     x = point[0] + random.randint(-jx, jx)
     y = point[1] + random.randint(-jy, jy)
-    smooth_move_to(x, y, random.uniform(0.25, 0.45), bow=8)
-    time.sleep(random.uniform(0.1, 0.25))
+    smooth_move_to(x, y, random.uniform(0.25, 0.45) * MOUSE_SPEED, bow=8)
+    time.sleep(random.uniform(0.1, 0.25) * MOUSE_SPEED)
     pyautogui.mouseDown()
     time.sleep(random.uniform(0.08, 0.18))
     pyautogui.mouseUp()
@@ -181,8 +188,8 @@ def direct_click(point, label, jx=4, jy=4):
     x = point[0] + random.randint(-jx, jx)
     y = point[1] + random.randint(-jy, jy)
     print(f"  {label} 클릭 → ({x}, {y})")
-    pyautogui.moveTo(x, y, duration=random.uniform(0.2, 0.35))
-    time.sleep(random.uniform(0.12, 0.2))
+    pyautogui.moveTo(x, y, duration=random.uniform(0.2, 0.35) * MOUSE_SPEED)
+    time.sleep(random.uniform(0.12, 0.2) * MOUSE_SPEED)
     pyautogui.mouseDown()
     time.sleep(random.uniform(0.1, 0.18))
     pyautogui.mouseUp()
@@ -209,7 +216,7 @@ def move_like_human(x, y):
     u = urgency()
     sx, sy = pyautogui.position()
     dist = ((x - sx) ** 2 + (y - sy) ** 2) ** 0.5
-    dur = min(0.80, max(0.20, dist / 420.0)) * MOUSE_SPEED * u
+    dur = min(0.85, max(0.28, dist / 380.0)) * MOUSE_SPEED * u
     bow = random.uniform(*BOW_RANGE)
     if dist > 40 and random.random() < OVERSHOOT_CHANCE * u:
         ox = x + random.randint(-15, 15)
@@ -233,7 +240,7 @@ def click_card(pos):
     x = pos[0] + random.randint(-9, 9)
     y = pos[1] + random.randint(-9, 9)
     move_like_human(x, y)
-    time.sleep(random.uniform(0.05, 0.14) * urgency())   # 누르기 직전 짧은 멈칫
+    time.sleep(random.uniform(0.05, 0.14) * MOUSE_SPEED * urgency())  # 누르기 직전 멈칫
     pyautogui.mouseDown()
     time.sleep(random.uniform(0.05, 0.11))
     pyautogui.mouseUp()
@@ -242,8 +249,8 @@ def click_card(pos):
 def right_click_item(pos):
     """인벤토리 칸을 우클릭해서 재료를 슬롯으로 보냄."""
     x, y = jittered(pos, 4)
-    smooth_move_to(x, y, random.uniform(0.25, 0.45), bow=10)
-    time.sleep(random.uniform(0.1, 0.2))
+    smooth_move_to(x, y, random.uniform(0.25, 0.45) * MOUSE_SPEED, bow=10)
+    time.sleep(random.uniform(0.1, 0.2) * MOUSE_SPEED)
     pyautogui.mouseDown(button="right")
     time.sleep(random.uniform(0.05, 0.12))
     pyautogui.mouseUp(button="right")
@@ -377,6 +384,8 @@ def read_clean(sct):
     멀쩡한 짝의 절반 이상이 '다른 그림'으로 오판됨. 그래서 그림을 저장하기
     전에는 항상 커서를 치우고 다시 읽는다.
     """
+    # 사람은 카드가 뒤집히면 잠깐 '뭐지' 하고 본 뒤에 움직임 — 그 시간을 줌
+    time.sleep(random.uniform(*LOOK_SEC) * urgency())
     park_off_board()
     return read_board(sct)
 
