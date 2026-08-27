@@ -104,11 +104,30 @@ SCAN_EVERY = 10          # 인벤토리 전체 스캔 주기(판). 넣기 직전
 BTN_JITTER = 9
 AUTO_RESTART_SEC = 60    # 오류로 멈췄을 때 이 시간 뒤 자동 재시작
 
+# ----- 마우스를 사람처럼 (여기 숫자만 만지면 됨) -----
+MOUSE_SPEED = 1.3        # 클수록 느리게 움직임 (1.0=기본). 눈으로 보고 조정하세요.
+                         # 올리면 더 사람같지만 판이 길어짐. 시뮬레이션 실측:
+                         #   1.0 → 판당 32~39초 / 1.2 → 42~46초 / 1.3 → 44~49초
+                         # 제한시간(50~60초)을 넘겨 실패하면 낮출 것.
+THINK_CHANCE = 0.22      # 카드를 고르기 전에 잠깐 '어디 눌러볼까' 하고 멈추는 빈도
+THINK_SEC = (0.25, 0.65) # 그때 멈추는 시간(초)
+OVERSHOOT_CHANCE = 0.28  # 목표를 살짝 지나쳤다가 되돌아오는 빈도 (사람 손 특징)
+BOW_RANGE = (9, 22)      # 이동 경로가 휘는 정도 (클수록 크게 휨)
+
+# 판이 길어지면 제한시간에 쫓기므로 점점 빨라짐 (느긋함 < 완주가 우선).
+# 앞부분은 사람처럼 느긋하게(클릭당 0.8초쯤), 뒤로 갈수록 빨라져서
+# 폭탄을 여러 번 밟은 판도 제한시간(50~60초) 안에 끝나게 함.
+RELAX_UNTIL = 20         # 이 시간(초)까지는 여유롭게
+HURRY_AT = 36            # 이 시간이 되면 최대한 빠르게
+HURRY_FLOOR = 0.30       # 최대로 서둘렀을 때의 속도 배율 (작을수록 빠름)
+
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True
 
 running = False
 alive = True
+_round_t0 = 0.0          # 이번 판을 시작한 시각 (서두름 판단용)
+_hurry_on = False        # 판 진행 중일 때만 서두름 계산을 적용
 _scan_cache = None
 _rounds_since_scan = 0
 _rounds_done = 0
@@ -135,7 +154,8 @@ def smooth_move_to(x, y, duration, bow=0):
     perp_x, perp_y = -(y - sy), (x - sx)
     plen = max((perp_x ** 2 + perp_y ** 2) ** 0.5, 1)
     perp_x, perp_y = perp_x / plen, perp_y / plen
-    bow_amount = random.uniform(-bow, bow) if bow else 0
+    # 휘는 양: 0에 가까우면 직선처럼 보이므로 최소 크기를 보장하고 방향만 랜덤
+    bow_amount = random.uniform(bow * 0.45, bow) * random.choice((-1, 1)) if bow else 0
     for i in range(1, steps + 1):
         t = i / steps
         e = t * t * (3 - 2 * t)
@@ -168,14 +188,52 @@ def direct_click(point, label, jx=4, jy=4):
     pyautogui.mouseUp()
 
 
+def urgency():
+    """1.0 = 여유롭게, 작을수록 서두름.
+
+    판 시작 후 RELAX_UNTIL 초까지는 사람처럼 느긋하게 움직이고, 그 뒤로는
+    제한시간(50~60초)에 쫓기므로 점점 빨라짐. 폭탄을 여러 번 밟아 판이
+    길어져도 시간 안에 끝낼 수 있게 하는 안전장치.
+    """
+    if not _hurry_on:
+        return 1.0
+    el = time.time() - _round_t0
+    if el <= RELAX_UNTIL:
+        return 1.0
+    span = max(1.0, HURRY_AT - RELAX_UNTIL)
+    return max(HURRY_FLOOR, 1.0 - (1.0 - HURRY_FLOOR) * (el - RELAX_UNTIL) / span)
+
+
+def move_like_human(x, y):
+    """사람 손처럼 휘어서 이동. 가끔 목표를 살짝 지나쳤다가 되돌아옴."""
+    u = urgency()
+    sx, sy = pyautogui.position()
+    dist = ((x - sx) ** 2 + (y - sy) ** 2) ** 0.5
+    dur = min(0.80, max(0.20, dist / 420.0)) * MOUSE_SPEED * u
+    bow = random.uniform(*BOW_RANGE)
+    if dist > 40 and random.random() < OVERSHOOT_CHANCE * u:
+        ox = x + random.randint(-15, 15)
+        oy = y + random.randint(-13, 13)
+        smooth_move_to(ox, oy, dur * 0.82, bow=bow)
+        time.sleep(random.uniform(0.04, 0.10) * u)      # 살짝 멈칫
+        smooth_move_to(x, y, max(0.07, dur * 0.33), bow=bow * 0.3)
+    else:
+        smooth_move_to(x, y, dur, bow=bow)
+
+
+def think_pause():
+    """'어디 눌러볼까' 하고 잠깐 멈추는 흔적."""
+    u = urgency()
+    if random.random() < THINK_CHANCE * u:
+        time.sleep(random.uniform(*THINK_SEC) * u)
+
+
 def click_card(pos):
-    """카드 한 장을 사람처럼 클릭. 짧은 거리라 이동시간도 짧게."""
+    """카드 한 장을 사람처럼 클릭."""
     x = pos[0] + random.randint(-9, 9)
     y = pos[1] + random.randint(-9, 9)
-    dist = abs(x - pyautogui.position()[0]) + abs(y - pyautogui.position()[1])
-    dur = min(0.45, max(0.13, dist / 900.0))     # 멀수록 조금 더 오래
-    smooth_move_to(x, y, dur * random.uniform(0.85, 1.2), bow=6)
-    time.sleep(random.uniform(0.03, 0.08))
+    move_like_human(x, y)
+    time.sleep(random.uniform(0.05, 0.14) * urgency())   # 누르기 직전 짧은 멈칫
     pyautogui.mouseDown()
     time.sleep(random.uniform(0.05, 0.11))
     pyautogui.mouseUp()
@@ -201,10 +259,19 @@ def park_mouse():
 
 
 def park_off_board():
-    """카드판을 읽기 전에 커서를 판 밖으로 치움 (커서가 카드를 가리는 것 방지)."""
-    x = int(CARD1_CENTER[0] - CARD_PITCH_X)
-    y = int(CARD1_CENTER[1] + GRID * CARD_PITCH_Y + 30)
-    smooth_move_to(x, y, random.uniform(0.12, 0.22), bow=5)
+    """카드판을 읽기 전에 커서를 판 밖으로 치움 (커서가 카드를 가리는 것 방지).
+
+    사람이 '한 발 물러나서 판을 훑어보는' 동작처럼 보이게 매번 조금씩 다른
+    자리로 감.
+    """
+    # 지금 커서 위치에서 '바로 아래'로만 빠짐 — 판을 가로질러 멀리 가면
+    # 시간만 잡아먹으므로, 카드판을 벗어나는 최소 거리만 이동함
+    cx, _ = pyautogui.position()
+    lo = int(CARD1_CENTER[0] - CARD_PITCH_X * 0.7)
+    hi = int(CARD1_CENTER[0] + CARD_PITCH_X * (GRID - 0.3))
+    x = min(hi, max(lo, cx + random.randint(-18, 18)))
+    y = int(CARD1_CENTER[1] + (GRID - 1) * CARD_PITCH_Y + random.randint(30, 52))
+    move_like_human(x, y)
 
 
 # ==================== 화면 읽기 ====================
@@ -302,6 +369,18 @@ def wait_flip(sct, pos, was):
     return read_board(sct)
 
 
+def read_clean(sct):
+    """커서를 카드판 밖으로 치운 뒤 읽음 — 그림 비교용으로는 반드시 이걸 써야 함.
+
+    카드를 클릭한 직후에는 커서가 그 카드를 덮고 있어서, 그대로 캡처하면
+    같은 그림인데도 차이값이 20~29 정도 커짐(실측). 판정 기준이 34이므로
+    멀쩡한 짝의 절반 이상이 '다른 그림'으로 오판됨. 그래서 그림을 저장하기
+    전에는 항상 커서를 치우고 다시 읽는다.
+    """
+    park_off_board()
+    return read_board(sct)
+
+
 def find_known_pair(memory, not_pair=()):
     """기억해둔 카드 중 같은 그림 두 장을 찾음. 이미 아닌 걸로 확인된 조합은 건너뜀."""
     ks = list(memory)
@@ -354,11 +433,13 @@ def play_board(sct, verbose=True):
     맞았는지 게임 화면으로 확인하고, 아니었으면 그 조합을 기억해서 다시
     시도하지 않음(not_pair). 이게 없으면 같은 카드를 무한히 다시 열게 됨.
     """
+    global _round_t0, _hurry_on
     memory = {}          # {(r,c): 그림}  열어봤지만 아직 못 맞춘 카드
     not_pair = set()     # frozenset({a,b}) — 같아 보였지만 실제로는 짝이 아니었음
     pending = None       # 방금 짝이라 믿고 눌러본 두 장 (다음 턴에 결과 확인)
     matched = set()
     t0 = time.time()
+    _round_t0, _hurry_on = t0, True     # 이 시점부터 '서두름' 계산 시작
     clicks = bombs = wrong = 0
     stuck = 0
 
@@ -369,14 +450,17 @@ def play_board(sct, verbose=True):
     while running and alive:
         if time.time() - t0 > ROUND_TIMEOUT:
             print(f"  [중단] 한 판이 {ROUND_TIMEOUT}초를 넘김")
+            _hurry_on = False
             return False, stats()
         if not window_open(sct):
             if verbose:
                 print(f"  창이 닫힘 → 한 판 완료 (클릭 {clicks}회, 폭탄 {bombs}회, "
                       f"{time.time()-t0:.0f}초)")
+            _hurry_on = False
             return True, stats()
 
-        park_off_board()
+        # 카드를 고를 때는 상태(뒷면/열림)만 보면 되고, 상태 판정은 카드 테두리
+        # 색으로 하므로 커서에 거의 영향받지 않음 → 여기선 커서를 안 치움
         states, _ = read_board(sct)
 
         # ---- 이번 턴에 처음 누를 카드 정하기 ----
@@ -384,6 +468,7 @@ def play_board(sct, verbose=True):
         if pair:
             _, first, second = pair          # 확정 짝을 노림
         else:
+            think_pause()          # 어디를 열어볼지 고민하는 흔적
             first, second = pick_unknown(states, memory), None
             if first is None:
                 # 안 본 카드가 없음 = 기억이 낡았거나 폭탄만 남음.
@@ -403,6 +488,9 @@ def play_board(sct, verbose=True):
         click_card(card_center(*first))
         clicks += 1
         states, images = wait_flip(sct, first, "?")
+        if states.get(first) != "X" and second is None:
+            # 이 카드의 그림을 기억해야 하므로 커서를 치우고 깨끗하게 다시 읽음
+            states, images = read_clean(sct)
 
         # 첫 클릭 직후에는 '맞춘 카드'만 열려있음 (틀린 두 장은 이 클릭에 닫힘)
         matched = {p for p, s in states.items() if s == "O" and p != first}
@@ -465,6 +553,8 @@ def play_board(sct, verbose=True):
         click_card(card_center(*c2))
         clicks += 1
         states2, images2 = wait_flip(sct, c2, "?")
+        if states2.get(c2) != "X":
+            states2, images2 = read_clean(sct)     # 커서 치우고 깨끗하게
         if states2.get(c2) == "X":
             if verbose:
                 print(f"  💣 폭탄 ({c2[0]+1},{c2[1]+1}) → 자리가 섞임, 기억 초기화")
@@ -482,6 +572,7 @@ def play_board(sct, verbose=True):
                 print(f"  · 탐색 중 같은 그림 발견 ({first[0]+1},{first[1]+1})"
                       f" + ({c2[0]+1},{c2[1]+1})")
 
+    _hurry_on = False
     return False, stats()
 
 
