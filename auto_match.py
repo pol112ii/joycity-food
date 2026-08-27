@@ -112,21 +112,27 @@ AUTO_RESTART_SEC = 60    # 오류로 멈췄을 때 이 시간 뒤 자동 재시�
 #   1.3 → 클릭당 약 0.70초
 #   1.6 → 클릭당 약 0.85초 (사람보다 확실히 느긋함)
 #   느릴수록 판이 길어지므로, 제한시간을 넘겨 판을 못 끝내면 낮추세요.
-MOUSE_SPEED = 1.6
+MOUSE_SPEED = 1.2
 THINK_CHANCE = 0.22      # 카드를 고르기 전에 잠깐 '어디 눌러볼까' 하고 멈추는 빈도
 THINK_SEC = (0.25, 0.65) # 그때 멈추는 시간(초)
 LOOK_SEC = (0.15, 0.40)  # 카드가 뒤집힌 뒤 '무슨 그림인지 보는' 시간.
                          # 이게 없으면 카드가 뒤집히자마자 커서가 홱 빠져나가서
                          # 기계처럼 보임 (특히 2장째를 연 직후)
-OVERSHOOT_CHANCE = 0.28  # 목표를 살짝 지나쳤다가 되돌아오는 빈도 (사람 손 특징)
-BOW_RANGE = (9, 22)      # 이동 경로가 휘는 정도 (클수록 크게 휨)
+BOW_RANGE = (7, 14)      # 이동 경로가 휘는 정도 (auto_cook 과 같은 범위)
+
+# 마우스 커서가 카드를 덮으면 그림 비교가 틀어짐(같은 그림인데 차이 +20~29).
+# 커서를 일부러 치우면 게임이 '비정상적 입력'으로 잡고, 가려진 부분만 빼고
+# 비교하면 다른 그림끼리도 비슷해져서 오판이 늘어남(실측으로 둘 다 확인).
+# → 커서가 그 카드에서 자연스럽게 벗어났을 때만 그림을 기억한다.
+#   다음 카드를 클릭하면 커서가 그리로 가므로, 앞 카드는 그때 깨끗해짐.
+CURSOR_BOX = (-4, -4, 20, 30)    # 커서가 차지하는 영역 (왼쪽, 위, 폭, 높이)
 
 # 판이 길어지면 제한시간에 쫓기므로 점점 빨라짐 (느긋함 < 완주가 우선).
 # 앞부분은 사람처럼 느긋하게(클릭당 0.8초쯤), 뒤로 갈수록 빨라져서
 # 폭탄을 여러 번 밟은 판도 제한시간(50~60초) 안에 끝나게 함.
-RELAX_UNTIL = 20         # 이 시간(초)까지는 여유롭게
-HURRY_AT = 36            # 이 시간이 되면 최대한 빠르게
-HURRY_FLOOR = 0.30       # 최대로 서둘렀을 때의 속도 배율 (작을수록 빠름)
+RELAX_UNTIL = 15         # 이 시간(초)까지는 여유롭게
+HURRY_AT = 28            # 이 시간이 되면 최대한 빠르게
+HURRY_FLOOR = 0.28       # 최대로 서둘렀을 때의 속도 배율 (작을수록 빠름)
 
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True
@@ -212,20 +218,26 @@ def urgency():
 
 
 def move_like_human(x, y):
-    """사람 손처럼 휘어서 이동. 가끔 목표를 살짝 지나쳤다가 되돌아옴."""
-    u = urgency()
-    sx, sy = pyautogui.position()
-    dist = ((x - sx) ** 2 + (y - sy) ** 2) ** 0.5
-    dur = min(0.85, max(0.28, dist / 380.0)) * MOUSE_SPEED * u
-    bow = random.uniform(*BOW_RANGE)
-    if dist > 40 and random.random() < OVERSHOOT_CHANCE * u:
-        ox = x + random.randint(-15, 15)
-        oy = y + random.randint(-13, 13)
-        smooth_move_to(ox, oy, dur * 0.82, bow=bow)
-        time.sleep(random.uniform(0.04, 0.10) * u)      # 살짝 멈칫
-        smooth_move_to(x, y, max(0.07, dur * 0.33), bow=bow * 0.3)
-    else:
-        smooth_move_to(x, y, dur, bow=bow)
+    """사람 손처럼 휘어서 한 번에 이동.
+
+    예전엔 '목표를 지나쳤다 되돌아오기(오버슈트)'를 넣었는데, 급격한 방향
+    전환이라 게임이 비정상적 입력으로 잡는 원인으로 의심됨 → 제거하고
+    음식만들기 봇(auto_cook)에서 문제없이 쓰던 단순한 곡선 이동만 사용.
+    """
+    dur = random.uniform(0.25, 0.45) * MOUSE_SPEED * urgency()
+    smooth_move_to(x, y, dur, bow=random.uniform(*BOW_RANGE))
+
+
+def hover_to(pos):
+    """클릭하지 않고 그 카드 쪽으로 커서만 옮김.
+
+    방금 연 카드는 커서에 가려 못 외우는데, 다음에 누를 카드 쪽으로 커서를
+    옮기면 앞 카드가 깨끗해져서 그때 외울 수 있음. 사람이 다음 카드로
+    손을 옮기는 자연스러운 전진 이동이라 되돌아오는 동작이 없음.
+    """
+    x = pos[0] + random.randint(-9, 9)
+    y = pos[1] + random.randint(-9, 9)
+    move_like_human(x, y)
 
 
 def think_pause():
@@ -265,20 +277,10 @@ def park_mouse():
     time.sleep(random.uniform(0.1, 0.2))
 
 
-def park_off_board():
-    """카드판을 읽기 전에 커서를 판 밖으로 치움 (커서가 카드를 가리는 것 방지).
-
-    사람이 '한 발 물러나서 판을 훑어보는' 동작처럼 보이게 매번 조금씩 다른
-    자리로 감.
-    """
-    # 지금 커서 위치에서 '바로 아래'로만 빠짐 — 판을 가로질러 멀리 가면
-    # 시간만 잡아먹으므로, 카드판을 벗어나는 최소 거리만 이동함
-    cx, _ = pyautogui.position()
-    lo = int(CARD1_CENTER[0] - CARD_PITCH_X * 0.7)
-    hi = int(CARD1_CENTER[0] + CARD_PITCH_X * (GRID - 0.3))
-    x = min(hi, max(lo, cx + random.randint(-18, 18)))
-    y = int(CARD1_CENTER[1] + (GRID - 1) * CARD_PITCH_Y + random.randint(30, 52))
-    move_like_human(x, y)
+# (예전에는 카드를 읽기 전에 커서를 판 밖으로 치우는 park_off_board 가 있었음.
+#  카드 클릭 → 커서 치우기 → 다시 카드로 이동이 반복되면서 게임이 비정상적
+#  입력으로 잡아, 지금은 커서를 전혀 움직이지 않고 CURSOR_MASK 로 가려진
+#  부분만 비교에서 빼는 방식으로 바꿨음.)
 
 
 # ==================== 화면 읽기 ====================
@@ -329,10 +331,26 @@ def classify(px):
     return "?" if best == green else ("O" if best == blue else "X")
 
 
+def cursor_clear_of(r, c):
+    """지금 마우스 커서가 이 카드를 안 가리고 있으면 True.
+
+    가리고 있는 동안 찍은 그림은 짝 비교에 쓰면 안 됨(차이값이 20~29 부풀어
+    같은 그림도 다르게 나옴). 이 카드가 깨끗해질 때까지 기다렸다 기억한다.
+    """
+    n = IMG_R * 2 + 1
+    cx, cy = pyautogui.position()
+    ox = card_center(r, c)[0] - IMG_R      # 크롭의 화면상 좌상단
+    oy = card_center(r, c)[1] - IMG_R
+    mx, my, mw, mh = CURSOR_BOX
+    x0, y0 = cx - ox + mx, cy - oy + my
+    return not (x0 < n and x0 + mw > 0 and y0 < n and y0 + mh > 0)
+
+
 def read_board(sct):
     """판 전체를 읽어 (상태, 열린카드그림) 반환.
 
-    상태: {(r,c): '?'|'O'|'X'|'.'}   그림: {(r,c): 이미지}  (열린 카드만)
+    상태: {(r,c): '?'|'O'|'X'|'.'}
+    그림: {(r,c): 이미지}  — 커서가 안 가린, 비교에 써도 되는 카드만 담김
     """
     board, left, top = grab_board(sct)
     states, images = {}, {}
@@ -340,7 +358,7 @@ def read_board(sct):
         for c in range(GRID):
             s = classify(cell_of(board, left, top, r, c, RING_OUT)[RING])
             states[(r, c)] = s
-            if s == "O":
+            if s == "O" and cursor_clear_of(r, c):
                 images[(r, c)] = cell_of(board, left, top, r, c, IMG_R)
     return states, images
 
@@ -376,17 +394,17 @@ def wait_flip(sct, pos, was):
     return read_board(sct)
 
 
-def read_clean(sct):
-    """커서를 카드판 밖으로 치운 뒤 읽음 — 그림 비교용으로는 반드시 이걸 써야 함.
+def read_after_flip(sct):
+    """카드가 뒤집힌 뒤 잠깐 보고 나서 읽음 (마우스는 움직이지 않음).
 
-    카드를 클릭한 직후에는 커서가 그 카드를 덮고 있어서, 그대로 캡처하면
-    같은 그림인데도 차이값이 20~29 정도 커짐(실측). 판정 기준이 34이므로
-    멀쩡한 짝의 절반 이상이 '다른 그림'으로 오판됨. 그래서 그림을 저장하기
-    전에는 항상 커서를 치우고 다시 읽는다.
+    커서가 카드를 덮으면 같은 그림인데도 차이값이 20~29 커져서 짝을 놓침.
+    예전엔 커서를 판 밖으로 치워서 해결했는데, 그 왕복 이동 때문에 게임이
+    비정상적 입력으로 잡았음 → 지금은 커서를 그대로 두고, 가려진 부분만
+    CURSOR_MASK 로 비교에서 빼는 방식(실측: 최대 차이 46.1 → 24.0).
     """
-    # 사람은 카드가 뒤집히면 잠깐 '뭐지' 하고 본 뒤에 움직임 — 그 시간을 줌
+    # 사람은 카드가 뒤집히면 잠깐 '뭐지' 하고 봄. 그 사이 그림이 안정되기도 함.
+    # (커서는 일부러 움직이지 않음 — 가려진 부분은 CURSOR_MASK 로 처리)
     time.sleep(random.uniform(*LOOK_SEC) * urgency())
-    park_off_board()
     return read_board(sct)
 
 
@@ -434,13 +452,17 @@ def play_board(sct, verbose=True):
     핵심 규칙 (녹화 영상 분석으로 확인):
       - 짝이 맞으면 두 장 다 계속 열려있음
       - 틀리면 '다음 카드를 클릭하는 순간' 닫힘 (시간이 지나서가 아님)
-        → 그래서 '한 턴의 첫 클릭 직후' 열려있는 카드 = 이미 맞춘 카드
-          이 성질을 이용해 매 턴 게임에게 직접 정답을 확인함
-      - 폭탄(주황)을 밟으면 못 맞춘 카드들의 자리가 전부 섞임 → 기억을 버림
+        → '한 턴의 첫 클릭 직후' 열려있는 카드 = 이미 맞춘 카드.
+          이 성질로 매 턴 게임에게 직접 정답을 확인함
+      - 폭탄(주황)을 밟으면 못 맞춘 카드 자리가 전부 섞임 → 기억을 버림
 
-    그림이 비슷해서 짝이라고 오판할 수 있으므로, 두 장을 눌러본 뒤 실제로
-    맞았는지 게임 화면으로 확인하고, 아니었으면 그 조합을 기억해서 다시
-    시도하지 않음(not_pair). 이게 없으면 같은 카드를 무한히 다시 열게 됨.
+    그림 기억은 '커서가 그 카드를 안 가리고 있을 때'만 함. 방금 클릭한 카드는
+    커서가 덮고 있어 바로는 못 외우지만, 다음 카드를 클릭하면 커서가 그리로
+    가므로 그때 깨끗하게 외워진다(사람이 하는 방식과 동일). 커서를 일부러
+    치우는 이동은 게임이 비정상적 입력으로 잡아서 쓰지 않음.
+
+    그림이 비슷해 짝으로 오판할 수 있으므로, 두 장을 눌러본 뒤 실제로 맞았는지
+    화면으로 확인하고 아니면 그 조합을 기억해 다시 시도하지 않음(not_pair).
     """
     global _round_t0, _hurry_on
     memory = {}          # {(r,c): 그림}  열어봤지만 아직 못 맞춘 카드
@@ -456,32 +478,40 @@ def play_board(sct, verbose=True):
         return {"clicks": clicks, "bombs": bombs, "wrong": wrong,
                 "secs": round(time.time() - t0, 1), "matched": len(matched)}
 
+    def absorb(images):
+        """지금 보이는 카드 중 커서에 안 가린 것들을 기억에 담음."""
+        for p, img in images.items():
+            if p not in matched:
+                memory[p] = img
+
+    def done(ok):
+        global _hurry_on
+        _hurry_on = False
+        return ok, stats()
+
     while running and alive:
         if time.time() - t0 > ROUND_TIMEOUT:
             print(f"  [중단] 한 판이 {ROUND_TIMEOUT}초를 넘김")
-            _hurry_on = False
-            return False, stats()
+            return done(False)
         if not window_open(sct):
             if verbose:
                 print(f"  창이 닫힘 → 한 판 완료 (클릭 {clicks}회, 폭탄 {bombs}회, "
                       f"{time.time()-t0:.0f}초)")
-            _hurry_on = False
-            return True, stats()
+            return done(True)
 
-        # 카드를 고를 때는 상태(뒷면/열림)만 보면 되고, 상태 판정은 카드 테두리
-        # 색으로 하므로 커서에 거의 영향받지 않음 → 여기선 커서를 안 치움
-        states, _ = read_board(sct)
+        states, images = read_board(sct)
+        absorb(images)
 
         # ---- 이번 턴에 처음 누를 카드 정하기 ----
         pair = find_known_pair(memory, not_pair)
         if pair:
-            _, first, second = pair          # 확정 짝을 노림
+            _, first, second = pair          # 아는 짝을 노림
         else:
-            think_pause()          # 어디를 열어볼지 고민하는 흔적
+            think_pause()                    # 어디를 열어볼지 고민하는 흔적
             first, second = pick_unknown(states, memory), None
             if first is None:
                 # 안 본 카드가 없음 = 기억이 낡았거나 폭탄만 남음.
-                # 아무 뒷면 카드나 눌러서 상황을 진행시킴 (폭탄이면 판이 섞임)
+                # 아무 뒷면 카드나 눌러 상황을 진행시킴 (폭탄이면 판이 섞임)
                 backs = [p for p, s in states.items() if s == "?"]
                 if not backs:
                     time.sleep(0.3)
@@ -497,24 +527,22 @@ def play_board(sct, verbose=True):
         click_card(card_center(*first))
         clicks += 1
         states, images = wait_flip(sct, first, "?")
-        if states.get(first) != "X" and second is None:
-            # 이 카드의 그림을 기억해야 하므로 커서를 치우고 깨끗하게 다시 읽음
-            states, images = read_clean(sct)
 
-        # 첫 클릭 직후에는 '맞춘 카드'만 열려있음 (틀린 두 장은 이 클릭에 닫힘)
+        # 첫 클릭 직후엔 '맞춘 카드'만 열려있음 (틀린 두 장은 이 클릭에 닫힘)
         matched = {p for p, s in states.items() if s == "O" and p != first}
-        memory = {p: m for p, m in memory.items() if p not in matched}
+        for p in matched:
+            memory.pop(p, None)
+        absorb(images)
 
-        # ---- 직전에 시도한 짝이 실제로 맞았는지 게임에게 확인 ----
+        # ---- 직전에 시도한 짝이 실제로 맞았는지 확인 ----
         if pending:
             a, b, ia, ib = pending
             if a in matched and b in matched:
                 if verbose:
                     print(f"  ✔ 짝 맞춤 ({a[0]+1},{a[1]+1}) + ({b[0]+1},{b[1]+1})")
             else:
-                # 그림이 비슷해서 오판한 것 → 조합을 기억하고 카드는 기억에 되돌림
                 not_pair.add(frozenset((a, b)))
-                memory[a], memory[b] = ia, ib
+                memory[a], memory[b] = ia, ib      # 오판 → 카드는 기억에 되돌림
                 wrong += 1
                 if verbose:
                     print(f"  ✗ ({a[0]+1},{a[1]+1}) + ({b[0]+1},{b[1]+1}) 는 짝이 아니었음"
@@ -528,42 +556,51 @@ def play_board(sct, verbose=True):
             not_pair.clear()
             bombs += 1
             continue
-        if first not in images:
-            continue                         # 못 읽음 → 다음 바퀴에 다시
-        img1 = images[first]
-        memory[first] = img1
         stuck = 0
 
-        # ---- 확정 짝을 노린 턴이면 두 번째 카드도 클릭 ----
+        # ---- 아는 짝을 노린 턴이면 두 번째 카드도 클릭 ----
         if second is not None:
+            ia = memory.get(first)
+            ib = memory.get(second)
             click_card(card_center(*second))
             clicks += 1
             wait_flip(sct, second, "?")
-            # 시도한 두 장은 기억에서 빼둠 — 안 그러면 다음 턴에 또 같은 짝을
-            # 고르고, 그 클릭 때문에 위 검증이 헛나감
-            pending = (first, second, memory.pop(first, img1),
-                       memory.pop(second, img1))
+            if ia is not None and ib is not None:
+                # 결과가 나올 때까지 기억에서 빼둠 (안 그러면 다음 턴에 또 같은
+                # 짝을 골라 검증이 헛나감). 틀렸으면 위에서 되돌림.
+                memory.pop(first, None)
+                memory.pop(second, None)
+                pending = (first, second, ia, ib)
             continue
 
-        # ---- 탐색 턴: 기억에 같은 그림이 있으면 바로 짝 시도 ----
-        m = find_match(img1, memory, not_pair, first)
-        if m:
-            _, b = m
-            click_card(card_center(*b))
-            clicks += 1
-            wait_flip(sct, b, "?")
-            pending = (first, b, memory.pop(first, img1), memory.pop(b, img1))
-            continue
-
-        # ---- 모르는 카드를 한 장 더 열어봄 (정보 최대화) ----
+        # ---- 탐색 턴 ----
         c2 = pick_unknown(states, memory, exclude={first})
         if c2 is None:
             continue
+
+        # 다음 후보 쪽으로 커서만 옮김 → 방금 연 first 가 깨끗해져서 외울 수 있음
+        hover_to(card_center(*c2))
+        time.sleep(random.uniform(*LOOK_SEC) * urgency())
+        states, images = read_board(sct)
+        absorb(images)
+
+        # first 와 같은 그림을 이미 아는 카드가 있으면, 후보 대신 그리로 감
+        ia = memory.get(first)
+        m = find_match(ia, memory, not_pair, first) if ia is not None else None
+        if m:
+            _, b = m
+            ib = memory.get(b)
+            click_card(card_center(*b))
+            clicks += 1
+            wait_flip(sct, b, "?")
+            memory.pop(first, None)
+            memory.pop(b, None)
+            pending = (first, b, ia, ib)
+            continue
+
         click_card(card_center(*c2))
         clicks += 1
         states2, images2 = wait_flip(sct, c2, "?")
-        if states2.get(c2) != "X":
-            states2, images2 = read_clean(sct)     # 커서 치우고 깨끗하게
         if states2.get(c2) == "X":
             if verbose:
                 print(f"  💣 폭탄 ({c2[0]+1},{c2[1]+1}) → 자리가 섞임, 기억 초기화")
@@ -571,12 +608,17 @@ def play_board(sct, verbose=True):
             not_pair.clear()
             bombs += 1
             continue
-        if c2 not in images2:
-            continue
-        memory[c2] = images2[c2]
-        if diff(img1, images2[c2]) <= SAME_DIFF and frozenset((first, c2)) not in not_pair:
-            pending = (first, c2, memory.pop(first, img1),
-                       memory.pop(c2, images2[c2]))   # 탐색하다 우연히 짝을 뽑음
+        # 커서가 c2 로 옮겨갔으므로 first 는 이제 깨끗하게 보임 → 여기서 외움
+        states2, images2 = read_after_flip(sct)
+        absorb(images2)
+
+        ia, ib = memory.get(first), memory.get(c2)
+        if (ia is not None and ib is not None
+                and diff(ia, ib) <= SAME_DIFF
+                and frozenset((first, c2)) not in not_pair):
+            memory.pop(first, None)
+            memory.pop(c2, None)
+            pending = (first, c2, ia, ib)      # 탐색하다 우연히 짝을 뽑음
             if verbose:
                 print(f"  · 탐색 중 같은 그림 발견 ({first[0]+1},{first[1]+1})"
                       f" + ({c2[0]+1},{c2[1]+1})")
