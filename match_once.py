@@ -16,14 +16,46 @@ auto_match.py(전체 자동)를 돌리기 전에, 짝맞추기 부분만 따로 
   좌표를 고쳐야 하면 auto_match.py 위쪽만 고치면 여기도 같이 적용됨.
 """
 
+import os
+import sys
 import time
 import threading
 
-import mss
-import keyboard
-import pyautogui
+# 임포트를 감싸서, 실패했을 때 창이 그냥 닫히지 않고 원인을 보여주게 함
+try:
+    import mss
+    import keyboard
+    import pyautogui
+except ImportError as e:
+    print("[에러] 필요한 프로그램이 설치되어 있지 않습니다:", e)
+    print()
+    print("cmd 에서 아래를 실행하세요:")
+    print("  py -m pip install mss numpy pyautogui keyboard pillow pygetwindow")
+    input("\n엔터를 누르면 창이 닫힙니다...")
+    sys.exit(1)
 
-import auto_match as am
+try:
+    import auto_match as am
+except ImportError as e:
+    here = os.path.dirname(os.path.abspath(__file__))
+    print("[에러] auto_match.py 를 찾을 수 없습니다:", e)
+    print()
+    print(f"match_once.py 는 auto_match.py 와 같은 폴더에 있어야 합니다.")
+    print(f"지금 폴더: {here}")
+    print(f"이 폴더의 py 파일: "
+          f"{', '.join(f for f in os.listdir(here) if f.endswith('.py')) or '(없음)'}")
+    print()
+    print("cmd 에서 아래를 실행해서 받으세요:")
+    print('  curl -o auto_match.py '
+          'https://raw.githubusercontent.com/pol112ii/joycity-food/main/auto_match.py')
+    input("\n엔터를 누르면 창이 닫힙니다...")
+    sys.exit(1)
+except Exception:
+    import traceback
+    print("[에러] auto_match.py 를 불러오다가 문제가 생겼습니다:\n")
+    traceback.print_exc()
+    input("\n엔터를 누르면 창이 닫힙니다...")
+    sys.exit(1)
 
 
 def main():
