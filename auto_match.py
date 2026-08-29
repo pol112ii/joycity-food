@@ -137,6 +137,11 @@ HURRY_FLOOR = 0.28       # 최대로 서둘렀을 때의 속도 배율 (작을�
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True
 
+STEP_LOG = False         # True면 모든 마우스 동작을 시각과 함께 찍음
+                         # (비정상적 입력이 어느 동작에서 뜨는지 찾을 때 씀)
+_step_n = 0
+_step_t0 = 0.0
+
 running = False
 alive = True
 _round_t0 = 0.0          # 이번 판을 시작한 시각 (서두름 판단용)
@@ -148,6 +153,20 @@ _rounds_done = 0
 
 def threshold_for(name):
     return MATCH_THRESHOLDS.get(name, MATCH_THRESHOLD)
+
+
+def step(msg):
+    """STEP_LOG 가 켜져 있으면 동작 하나하나를 번호/시각과 함께 찍음.
+
+    '비정상적 입력' 경고가 떴을 때, 화면의 마지막 줄이 곧 원인이 되는 동작임.
+    """
+    global _step_n, _step_t0
+    if not STEP_LOG:
+        return
+    if _step_t0 == 0.0:
+        _step_t0 = time.time()
+    _step_n += 1
+    print(f"  [{time.time() - _step_t0:6.1f}초] #{_step_n:3d} {msg}", flush=True)
 
 
 # ==================== 마우스 (사람처럼 움직이기) ====================
@@ -182,6 +201,7 @@ def smooth_move_to(x, y, duration, bow=0):
 def human_click(point, jx=10, jy=4):
     x = point[0] + random.randint(-jx, jx)
     y = point[1] + random.randint(-jy, jy)
+    step(f"좌클릭(버튼) → ({x}, {y})")
     smooth_move_to(x, y, random.uniform(0.25, 0.45) * MOUSE_SPEED, bow=8)
     time.sleep(random.uniform(0.1, 0.25) * MOUSE_SPEED)
     pyautogui.mouseDown()
@@ -194,6 +214,7 @@ def direct_click(point, label, jx=4, jy=4):
     x = point[0] + random.randint(-jx, jx)
     y = point[1] + random.randint(-jy, jy)
     print(f"  {label} 클릭 → ({x}, {y})")
+    step(f"직선클릭({label}) → ({x}, {y})")
     pyautogui.moveTo(x, y, duration=random.uniform(0.2, 0.35) * MOUSE_SPEED)
     time.sleep(random.uniform(0.12, 0.2) * MOUSE_SPEED)
     pyautogui.mouseDown()
@@ -237,6 +258,7 @@ def hover_to(pos):
     """
     x = pos[0] + random.randint(-9, 9)
     y = pos[1] + random.randint(-9, 9)
+    step(f"이동만(클릭X) → ({x}, {y})")
     move_like_human(x, y)
 
 
@@ -251,6 +273,7 @@ def click_card(pos):
     """카드 한 장을 사람처럼 클릭."""
     x = pos[0] + random.randint(-9, 9)
     y = pos[1] + random.randint(-9, 9)
+    step(f"카드 클릭 → ({x}, {y})")
     move_like_human(x, y)
     time.sleep(random.uniform(0.05, 0.14) * MOUSE_SPEED * urgency())  # 누르기 직전 멈칫
     pyautogui.mouseDown()
@@ -261,6 +284,7 @@ def click_card(pos):
 def right_click_item(pos):
     """인벤토리 칸을 우클릭해서 재료를 슬롯으로 보냄."""
     x, y = jittered(pos, 4)
+    step(f"우클릭(재료) → ({x}, {y})")
     smooth_move_to(x, y, random.uniform(0.25, 0.45) * MOUSE_SPEED, bow=10)
     time.sleep(random.uniform(0.1, 0.2) * MOUSE_SPEED)
     pyautogui.mouseDown(button="right")

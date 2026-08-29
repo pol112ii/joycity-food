@@ -27,8 +27,7 @@
 
      --- 카드 클릭이 전부 통과했다면, 카드 외의 동작 확인 ---
      F11 = '시작' 버튼 클릭      ← 봇이 제일 먼저 하는 동작
-     F12 = 인벤토리 우클릭       ← 재료 넣기 동작
-     F13 = 클릭 + 화면캡처 동시  ← 실제 봇과 같은 조합
+     F12 = 클릭 + 화면캡처 동시  ← 실제 봇과 같은 조합
 
      F9 = 종료
 
@@ -256,8 +255,7 @@ def main():
     print("   F10 = 느린 속도로 30번 클릭 (1.5초 간격, 약 45초)")
     print("   --- 카드 클릭이 전부 통과했다면, 카드 외의 동작 확인 ---")
     print("   F11 = '시작' 버튼 클릭 (봇이 제일 먼저 하는 동작)  ★유력")
-    print("   F12 = 인벤토리 우클릭 (재료 넣기 동작)")
-    print("   F13 = 클릭하면서 동시에 화면 캡처 (실제 봇과 같은 조합)")
+    print("   F12 = 클릭하면서 동시에 화면 캡처 (실제 봇과 같은 조합)")
     print("   F9 = 종료")
     print()
     print("   ※ F7/F8/F10 은 몇 번째에 경고가 뜨는지가 중요합니다.")
@@ -272,7 +270,7 @@ def main():
                     ("f5", t5_teleport_click), ("f6", t6_capture_only),
                     ("f7", t7_volume), ("f8", t8_real_rhythm),
                     ("f10", t9_slow_volume), ("f11", t11_start_button),
-                    ("f12", t12_right_click_item), ("f13", t13_click_and_capture)):
+                    ("f12", t13_click_and_capture)):
         keyboard.add_hotkey(key, lambda f=fn: threading.Thread(target=f, daemon=True).start())
     keyboard.add_hotkey("f9", quit_all)
 
