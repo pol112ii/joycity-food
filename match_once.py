@@ -101,6 +101,10 @@ def main():
                 # play_board 안에서 running/alive 를 보므로 켜줌
                 am.running = True
                 am.alive = True
+                am.STEP_LOG = True     # 동작 하나하나를 시각과 함께 찍음
+                print("\n(아래는 봇이 하는 모든 마우스 동작입니다.")
+                print(" '비정상적 입력' 경고가 뜨면 바로 F9 를 누르고,")
+                print("  화면의 마지막 줄을 알려주세요 — 그게 원인입니다.)\n")
 
                 if not am.press_start(sct):
                     print("[중단] 시작 버튼을 눌렀는데 카드판이 안 보입니다.")
