@@ -25,6 +25,11 @@
      F8  = 실제 봇 리듬으로 20턴 (2장씩)
      F10 = 느린 속도로 30번 클릭 (1.5초 간격)
 
+     --- 카드 클릭이 전부 통과했다면, 카드 외의 동작 확인 ---
+     F11 = '시작' 버튼 클릭      ← 봇이 제일 먼저 하는 동작
+     F12 = 인벤토리 우클릭       ← 재료 넣기 동작
+     F13 = 클릭 + 화면캡처 동시  ← 실제 봇과 같은 조합
+
      F9 = 종료
 
 ■ 결과로 알 수 있는 것
@@ -190,6 +195,42 @@ def t9_slow_volume():
         time.sleep(1.5)
 
 
+@guard
+def t11_start_button():
+    """봇이 제일 먼저 하는 동작 — 시작 버튼 클릭. (카드 클릭과 다른 함수를 씀)"""
+    print("\n[F11] '시작' 버튼을 1번 클릭합니다")
+    print(f"      좌표: {am.START_BTN}")
+    print("      ※ 재료를 넣어서 시작을 누를 수 있는 상태여야 의미가 있습니다")
+    am.human_click(am.START_BTN)
+    print("  시작 버튼 클릭 완료")
+
+
+@guard
+def t12_right_click_item():
+    """재료 넣기 동작 — 인벤토리 우클릭."""
+    print("\n[F12] 인벤토리 첫 칸을 우클릭합니다 (재료 넣기와 같은 동작)")
+    print(f"      좌표: {am.CELL1_CENTER}")
+    am.right_click_item(am.CELL1_CENTER)
+    print("  우클릭 완료")
+
+
+@guard
+def t13_click_and_capture():
+    """클릭과 화면캡처를 동시에 — 실제 봇처럼 섞어서."""
+    print("\n[F13] 클릭하면서 동시에 화면을 계속 캡처합니다 (실제 봇과 같은 조합)")
+    print("      20번 클릭, 그 사이 계속 화면 읽기")
+    spots = [am.card_center(r, c) for r in range(5) for c in range(5)]
+    random.shuffle(spots)
+    with mss.mss() as sct:
+        for i in range(1, 21):
+            am.click_card(spots[(i - 1) % len(spots)])
+            t0 = time.time()
+            while time.time() - t0 < 0.5:        # 실제 봇처럼 계속 읽기
+                am.read_board(sct)
+                time.sleep(0.04)
+            print(f"  {i}번째 클릭 + 캡처", flush=True)
+
+
 def quit_all():
     global _alive
     _alive = False
@@ -213,6 +254,10 @@ def main():
     print("   F7  = 봇 속도로 40번 클릭 (0.6초 간격, 약 24초)")
     print("   F8  = 실제 봇 리듬으로 20턴 (2장씩 = 40클릭)")
     print("   F10 = 느린 속도로 30번 클릭 (1.5초 간격, 약 45초)")
+    print("   --- 카드 클릭이 전부 통과했다면, 카드 외의 동작 확인 ---")
+    print("   F11 = '시작' 버튼 클릭 (봇이 제일 먼저 하는 동작)  ★유력")
+    print("   F12 = 인벤토리 우클릭 (재료 넣기 동작)")
+    print("   F13 = 클릭하면서 동시에 화면 캡처 (실제 봇과 같은 조합)")
     print("   F9 = 종료")
     print()
     print("   ※ F7/F8/F10 은 몇 번째에 경고가 뜨는지가 중요합니다.")
@@ -226,7 +271,8 @@ def main():
                     ("f3", t3_human_pace), ("f4", t4_bot_pace),
                     ("f5", t5_teleport_click), ("f6", t6_capture_only),
                     ("f7", t7_volume), ("f8", t8_real_rhythm),
-                    ("f10", t9_slow_volume)):
+                    ("f10", t9_slow_volume), ("f11", t11_start_button),
+                    ("f12", t12_right_click_item), ("f13", t13_click_and_capture)):
         keyboard.add_hotkey(key, lambda f=fn: threading.Thread(target=f, daemon=True).start())
     keyboard.add_hotkey("f9", quit_all)
 
