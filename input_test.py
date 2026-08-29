@@ -20,6 +20,11 @@
      F5 = 마우스를 순간이동시켜 클릭 (곡선 이동 없이)
      F6 = 화면 캡처만 100번 (마우스/키보드 입력 전혀 없음)
 
+     --- F1~F6 이 전부 통과했다면, 양(누적)이 문제인지 확인 ---
+     F7  = 봇 속도로 40번 클릭 (0.6초 간격)     ← 몇 번째에 뜨는지 보기
+     F8  = 실제 봇 리듬으로 20턴 (2장씩)
+     F10 = 느린 속도로 30번 클릭 (1.5초 간격)
+
      F9 = 종료
 
 ■ 결과로 알 수 있는 것
@@ -143,6 +148,48 @@ def t6_capture_only():
         print(f"  캡처 100회 완료 ({time.time()-t0:.1f}초)")
 
 
+@guard
+def t7_volume():
+    """양이 문제인지 — 봇 속도로 오래 클릭하며 몇 번째에 뜨는지 봄."""
+    print("\n[F7] 봇 속도로 40번 클릭합니다 (0.6초 간격, 약 24초)")
+    print("     경고가 뜨는 순간의 '번호'를 기억해 주세요!")
+    spots = [am.card_center(r, c) for r in range(5) for c in range(5)]
+    random.shuffle(spots)
+    for i in range(1, 41):
+        am.click_card(spots[(i - 1) % len(spots)])
+        print(f"  {i}번째 클릭 ({0.6*i:.0f}초 경과)", flush=True)
+        time.sleep(0.6)
+
+
+@guard
+def t8_real_rhythm():
+    """실제 봇과 같은 리듬 — 두 장 연속으로 열고 잠깐 쉬는 것을 반복."""
+    print("\n[F8] 실제 봇 리듬으로 20턴 (한 턴에 2장씩 = 40클릭)")
+    print("     경고가 뜨는 순간의 '턴 번호'를 기억해 주세요!")
+    spots = [am.card_center(r, c) for r in range(5) for c in range(5)]
+    random.shuffle(spots)
+    k = 0
+    for turn in range(1, 21):
+        for _ in range(2):                  # 한 턴에 두 장
+            am.click_card(spots[k % len(spots)])
+            k += 1
+            time.sleep(random.uniform(0.25, 0.45))
+        print(f"  {turn}번째 턴 완료 (누적 {k}클릭)", flush=True)
+        time.sleep(random.uniform(0.5, 0.9))    # 턴 사이 쉬는 시간
+
+
+@guard
+def t9_slow_volume():
+    """느리게 오래 — 간격을 넉넉히 줘도 양 때문에 걸리는지."""
+    print("\n[F10] 느린 속도로 30번 클릭합니다 (1.5초 간격, 약 45초)")
+    spots = [am.card_center(r, c) for r in range(5) for c in range(5)]
+    random.shuffle(spots)
+    for i in range(1, 31):
+        am.click_card(spots[(i - 1) % len(spots)])
+        print(f"  {i}번째 클릭 ({1.5*i:.0f}초 경과)", flush=True)
+        time.sleep(1.5)
+
+
 def quit_all():
     global _alive
     _alive = False
@@ -162,7 +209,14 @@ def main():
     print("   F4 = 6장을 봇 속도로 (0.6초 간격)")
     print("   F5 = 순간이동 후 클릭 (곡선 없이)")
     print("   F6 = 화면 캡처만 100번 (입력 없음)")
+    print("   --- 위가 다 통과했다면 아래로 (양이 문제인지 확인) ---")
+    print("   F7  = 봇 속도로 40번 클릭 (0.6초 간격, 약 24초)")
+    print("   F8  = 실제 봇 리듬으로 20턴 (2장씩 = 40클릭)")
+    print("   F10 = 느린 속도로 30번 클릭 (1.5초 간격, 약 45초)")
     print("   F9 = 종료")
+    print()
+    print("   ※ F7/F8/F10 은 몇 번째에 경고가 뜨는지가 중요합니다.")
+    print("     화면에 번호가 찍히니 뜨는 순간의 번호를 알려주세요.")
     print("=" * 60)
     print(f" 카드판 좌표: 1행1열 {am.CARD1_CENTER}, 간격 {am.CARD_PITCH_X}")
     print(" 비상시: 마우스를 화면 왼쪽 위 구석으로!")
@@ -170,7 +224,9 @@ def main():
 
     for key, fn in (("f1", t1_move_only), ("f2", t2_one_click),
                     ("f3", t3_human_pace), ("f4", t4_bot_pace),
-                    ("f5", t5_teleport_click), ("f6", t6_capture_only)):
+                    ("f5", t5_teleport_click), ("f6", t6_capture_only),
+                    ("f7", t7_volume), ("f8", t8_real_rhythm),
+                    ("f10", t9_slow_volume)):
         keyboard.add_hotkey(key, lambda f=fn: threading.Thread(target=f, daemon=True).start())
     keyboard.add_hotkey("f9", quit_all)
 
