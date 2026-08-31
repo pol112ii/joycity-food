@@ -108,7 +108,14 @@ SCAN_EVERY = 5          # 인벤토리 스캔 주기(판) — 재료 양이 많�
 # JOB_ACT_BTN = 직업 창의 "직업활동" 버튼 중심 좌표.
 JOB_BTN     = (437, 698)     # 아래 메뉴바의 "직업" 아이콘
 JOB_ACT_BTN = (685, 246)     # 직업 창의 "직업활동" 버튼
-GAUGE_BG_RGB = (40, 88, 47)   # 음식만들기 창의 온도계 주변 진초록 (열림 확인용)
+GAUGE_BG_RGB = (40, 88, 47)   # 음식만들기 창의 온도계 주변 진초록 (색으로 확인할 때만 씀)
+BG_TOL = 15           # 위 색과 이만큼 이내면 '요리창 배경'으로 봄. 예전엔 30이었는데
+                      # 기준색이 어두우면 허용범위가 게임 배경(밤/풀숲/검은 UI)까지
+                      # 덮어서 '창이 닫혔는데 열렸다'고 오판했음 → 절반으로 좁힘.
+
+# 창 제목 — 열림 판정의 '주' 근거. 색은 pygetwindow를 못 쓸 때만 쓰는 보조 수단.
+COOK_WIN_TITLE = "음식만들기"
+JOB_WIN_TITLE  = "직업"
 REOPEN_WAIT = 8         # 창 열림 최대 대기(초)
 MATCH_THRESHOLD = 50    # 기본 인식 기준 (차이값) — 실사용 결과 50이 잘 맞음. 오인식하면 낮추기
 # 재료별로 다른 기준이 필요하면 여기에 추가 (예: {"버섯": 45})
@@ -132,6 +139,9 @@ COOK_TIMEOUT = 90       # 요리 1판 최대 대기(초)
 # RETRY_SEC=None이면 자동 재시작 안 함. 사용자가 직접 F8로 끈 경우엔 둘 다 안 함.
 RETRY_SEC = 60
 MAX_FIX_TRIES = 3
+MAX_RETRY_CYCLES = 5    # 자동 재시작을 이만큼 연달아 했는데 한 판도 성공 못 하면,
+                        # 그건 일시적 사고가 아니라 좌표/창 설정이 어긋난 것.
+                        # 무한히 헛돌지 말고 알림 보내고 완전히 멈춤 (F8로 재개).
 
 # ----- 가방(아이템 창) 자동 열기 -----
 # 재료 넣기 전에 가방(아이템) 창이 안 보이면 자동으로 한 번 열어봄.
@@ -178,6 +188,7 @@ running = False
 alive = True
 retry_at = None          # 오류로 멈춘 뒤 자동 재시작할 시각 (None이면 예약 없음)
 _fail_streak = 0         # 연속 실패 횟수 — 한 판 성공하면 0으로 리셋
+_retry_cycles = 0        # 한 판도 성공 못 한 채 자동 재시작한 횟수 — 한 판 성공/F8이면 0
 _scan_cache = None       # 마지막 인벤토리 스캔 결과 {이름: [좌표,...]}
 _rounds_since_scan = 0   # 마지막 스캔 이후 재료를 넣은 판 수
 _fail_detail = ""        # 마지막 실패의 상세 내용 (알림 메시지에 덧붙임)
@@ -579,34 +590,59 @@ _bg = np.array(GAUGE_BG_RGB, dtype=int)
 
 
 def window_open(sct):
-    """음식만들기 창이 열려있는지 — 온도계 관 '바로 위'의 배경이 보이는지로 판단.
+    """음식만들기 창이 열려있는지 — 창 제목으로 확인하고, 안 되면 색으로 확인.
+
+    예전에는 온도계 위 얇은 띠의 '색'만 보고 판단했는데, 기준색이 어두운 초록이라
+    창이 닫혀 있어도 뒤에 비치는 게임 배경(밤/풀숲/검은 UI)이 같은 색 범위에
+    들어오면 '열렸다'고 오판했음. 그러면 봇이 창을 다시 열지 않고(직업창을 아예
+    안 누름) 허공에 재료를 넣고 시작 버튼을 눌러서, 창도 없는데 혼자 계속
+    돌아가는 사고가 남. 그래서 이제는 실제로 그 이름의 창이 있는지를 먼저 봄.
+
+    pygetwindow가 없거나 확인 불가일 때만 예전 색 판정으로 넘어감.
+    """
+    v = win_visible(COOK_WIN_TITLE)
+    if v is not None:
+        return v
+    return window_open_by_color(sct)
+
+
+def window_open_by_color(sct):
+    """(보조) 온도계 관 '바로 위' 띠가 요리창 배경색인지로 판단.
 
     관 자체(GAUGE_TOP~+HEIGHT)를 보면 요리 중엔 수은(빨강/노랑)이 채우고 있어서
     배경이 안 보이는 게 정상이라, 요리 중인데 "닫혔다"고 오판하게 됨.
-    그래서 수은이 절대 닿지 않는, 관 바로 위쪽 얇은 띠만 확인함 — 여긴 창이
-    열려있는 한 항상 배경색이어야 하고, 창이 실제로 닫힐 때만 사라짐.
+    그래서 수은이 절대 닿지 않는, 관 바로 위쪽 얇은 띠만 확인함.
     """
     region = {"top": max(GAUGE_TOP - 22, 0), "left": GAUGE_LEFT,
               "width": GAUGE_WIDTH, "height": 14}
     img = np.asarray(sct.grab(region), dtype=int)[:, :, :3][:, :, ::-1]
-    near_bg = np.all(np.abs(img - _bg) <= 30, axis=-1)
+    near_bg = np.all(np.abs(img - _bg) <= BG_TOL, axis=-1)
     return near_bg.mean() > 0.5
 
 
-def open_job_window():
+def open_job_window(force=False):
     """직업 창이 '확실히' 열릴 때까지 처리. 열렸으면 True.
 
     직업 창이 안 열린 채 직업활동 좌표를 눌러봤자 허공 클릭이라,
     클릭 → 창 제목("직업")으로 열림 확인 → 안 열렸으면 다시 클릭 (최대 3번).
-    이미 열려있으면 다시 안 누름 (토글로 닫혀버리는 것 방지).
+    보통은 이미 열려있으면 다시 안 누름 (토글로 닫혀버리는 것 방지).
+
+    force=True 면 '이미 열려있음'을 믿지 않고 닫았다 다시 엶. 이전 세션의
+    유령 창이 제목만 남아 잡히면 계속 '열려있다'고 나오면서 정작 클릭은
+    허공에 들어가는데, 그 상태를 푸는 유일한 방법이라 재시도 때 씀.
     """
-    if win_visible("직업") is True:
-        print("직업 창 이미 열려있음")
-        return True
+    if win_visible(JOB_WIN_TITLE) is True:
+        if not force:
+            print("직업 창 이미 열려있음")
+            return True
+        print("  직업 창이 '열림'으로 보이는데 클릭이 안 먹음 → 닫았다 다시 열기")
+        if JOB_BTN is not None:
+            direct_click(JOB_BTN, "직업(닫기)")
+            time.sleep(random.uniform(0.8, 1.2))
     if JOB_BTN is None:
         print("[설정 필요] JOB_BTN(직업 아이콘 좌표)이 없고 직업 창도 안 보임")
         return False
-    if win_visible("직업") is None:
+    if win_visible(JOB_WIN_TITLE) is None:
         # pygetwindow로 확인 불가 → 예전 방식대로 클릭하고 시간만 기다림
         direct_click(JOB_BTN, "직업")
         time.sleep(random.uniform(1.2, 2.0))
@@ -615,7 +651,7 @@ def open_job_window():
         direct_click(JOB_BTN, "직업")
         t0 = time.time()
         while running and alive and time.time() - t0 < 4:
-            if win_visible("직업") is True:
+            if win_visible(JOB_WIN_TITLE) is True:
                 print("직업 창 열림 확인")
                 time.sleep(random.uniform(0.6, 1.0))
                 return True
@@ -653,12 +689,16 @@ def reopen_window(sct):
             return False
         # 음식만들기가 안 떴음 — 직업 창이 사라졌으면 클릭은 먹었는데 뭔가 꼬인 것,
         # 남아있으면 클릭이 빗나간 것. 어느 쪽이든 직업 창부터 다시 확보하고 재시도.
-        if win_visible("직업") is False:
+        if win_visible(JOB_WIN_TITLE) is False:
             print("  직업활동은 눌렸는데 음식만들기 창이 안 뜸 → 직업 창부터 다시 열기")
             if not open_job_window():
                 return False
         else:
+            # 직업 창이 그대로면 클릭이 빗나갔거나, 유령 창이라 화면엔 없는 것.
+            # 첫 번째는 그냥 다시 클릭해보고, 그래도 안 되면 창을 닫았다 다시 엶.
             print("  직업활동 클릭이 안 먹은 듯 (직업 창 그대로) → 다시 클릭")
+            if attempt >= 1 and not open_job_window(force=True):
+                return False
     print("[실패] 음식만들기 창이 안 열림 — 좌표/창 위치 확인")
     return False
 
@@ -1074,7 +1114,7 @@ def stop_with_retry(reason):
     사용자가 이미 F8로 끈 상태(running=False)면 아무것도 안 함 —
     사용자의 정지 의사를 자동 재시작이 덮어쓰지 않게.
     """
-    global running, retry_at, _fail_detail
+    global running, retry_at, _fail_detail, _retry_cycles
     if not running:
         return
     running = False
@@ -1082,6 +1122,18 @@ def stop_with_retry(reason):
     _fail_detail = ""
     msg = reason + (f"\n상세: {detail}" if detail else "")
     tally = f"\n(지금까지 누적 {_rounds_done}판 완료)"
+    _retry_cycles += 1
+    if _retry_cycles >= MAX_RETRY_CYCLES:
+        # 재시작만 반복하고 한 판도 못 끝냈음 = 화면/좌표가 어긋난 상태.
+        # 계속 재시작해봐야 허공만 클릭하므로 여기서 끊고 사람을 부름.
+        retry_at = None
+        print(f"[정지] {reason} — 자동 재시작 {_retry_cycles}번 모두 실패. 자동 재시작 중단.")
+        print("       창 위치/해상도가 바뀌었을 가능성이 큽니다. measure.py 로 좌표를")
+        print("       다시 재거나, 게임 창을 원래 자리로 돌려놓고 F8 을 눌러주세요.")
+        notify(f"🛑 멈춤: {msg}\n자동 재시작을 {_retry_cycles}번 했는데 한 판도 성공하지 "
+               f"못해서 중단합니다. 창 위치나 해상도가 바뀐 것 같아요 — 확인 후 F8 을 "
+               f"눌러주세요.{tally}", key="setup", photo=True)
+        return
     if RETRY_SEC is not None:
         retry_at = time.time() + RETRY_SEC
         print(f"[정지] {reason} — {RETRY_SEC}초 뒤 자동 재시작 (즉시 재개 F8, 종료 F9)")
@@ -1146,7 +1198,7 @@ def run_round(sct, templates):
     어느 단계든 실패하면 step_failed가 자가점검 후 즉시 재시도하고,
     연속 실패가 쌓이면 그때만 RETRY_SEC 대기 후 자동 재시작으로 넘어감.
     """
-    global running, _fail_streak, _rounds_done
+    global running, _fail_streak, _rounds_done, _retry_cycles
 
     if CELL1_CENTER == (0, 0) or SLOT1_CENTER == (0, 0):
         print("[설정 필요] CELL1_CENTER / SLOT1_CENTER 좌표를 측정해서 넣어주세요.")
@@ -1179,6 +1231,7 @@ def run_round(sct, templates):
         return
 
     _fail_streak = 0   # 한 판 성공 → 연속 실패 카운트 리셋
+    _retry_cycles = 0  # 정상 작동 확인 → 자동 재시작 누적도 리셋
     _rounds_done += 1
     print(f"★ 한 판 완료! (누적 {_rounds_done}판)")
     if not LOOP:
@@ -1257,9 +1310,10 @@ def worker():
 
 
 def toggle():
-    global running, retry_at, _fail_streak, _scan_cache
+    global running, retry_at, _fail_streak, _scan_cache, _retry_cycles
     retry_at = None      # 사용자가 직접 F8을 누르면 예약된 자동 재시작은 취소
     _fail_streak = 0
+    _retry_cycles = 0    # 사람이 손봤을 테니 자동 재시작 누적도 리셋
     _scan_cache = None   # 사용자가 손댔을 수 있으니 다음 판은 새로 스캔
     running = not running
     print("\n▶ 시작됨" if running else "\n⏸ 정지됨")
