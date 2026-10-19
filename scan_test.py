@@ -14,9 +14,9 @@ import os
 import re
 
 # ===================== 설정값 (이 컴퓨터 좌표 고정, auto_cook.py와 동일) =====================
-CELL1_CENTER = (1176, 77)
-PITCH_X = 52.4
-PITCH_Y = 52.75
+CELL1_CENTER = (2411, 174)
+PITCH_X = 42
+PITCH_Y = 42
 
 COLS = 6
 ROWS = 5

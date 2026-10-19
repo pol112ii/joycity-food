@@ -35,7 +35,7 @@ import sys
 import json
 
 # 정렬 대상 창 제목. 게임에 창이 더 생기면 여기에 추가하면 됨.
-TITLES = ["조이톡2", "아이템", "음식만들기", "가구만들기", "직업"]
+TITLES = ["조이톡2", "조이톡", "아이템", "음식만들기", "가구만들기", "직업", "제작", "식장이"]
 
 LAYOUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "window_layout.json")

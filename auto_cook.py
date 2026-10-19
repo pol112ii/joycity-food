@@ -3,14 +3,20 @@
 음식만들기 풀 자동 봇.
 
 F8 한 번이면:
-  1. 인벤토리를 스캔해서 레시피 재료를 찾고
-  2. 드래그해서 요리창 재료 슬롯에 넣고
+  1. 제작 창 안의 인벤토리를 스캔해서 레시피 재료를 찾고
+  2. 우클릭해서 제작 창 재료 슬롯에 넣고
   3. 시작 버튼을 클릭하고
-  4. 온도를 적정 구간에 유지 (꾹 누르기 방식)
+  4. 새로 뜨는 '식장이' 창의 온도를 적정 구간에 유지
+     (키보드 꾹 누르기 방식: ',' = 온도 올리기(+), '.' = 내리기(-))
   5. 요리가 끝나면 (LOOP=True면 재료가 떨어질 때까지) 반복
 
 이 파일 하나로 실행됨. 단, 같은 폴더에 items 폴더(아이콘 등록)가 있어야 함.
 F8 = 시작/정지, F9 = 종료. 비상시: 마우스를 화면 왼쪽 위 구석으로.
+
+※ 게임 업데이트(창 구조 변경) 후 버전:
+   - 아이템 창은 이제 필요 없음 (제작 창 안에 인벤토리가 있음)
+   - 온도 +/- 는 마우스 대신 키보드 ',' '.' 를 꾹 누름
+   - 좌표는 규남본체 기준. 다른 컴퓨터는 measure.py 로 다시 재서 바꿔야 함
 """
 
 import os
@@ -20,6 +26,7 @@ import random
 import threading
 import urllib.parse
 import urllib.request
+import urllib.error
 
 import mss
 import numpy as np
@@ -27,19 +34,37 @@ import pyautogui
 import keyboard
 from PIL import Image
 
-# ===================== 온도계 / 버튼 (이 컴퓨터 좌표 고정) =====================
-GAUGE_LEFT   = 1046
-GAUGE_TOP    = 132
+# ===================== 식장이 창 (시작 누르면 뜨는 온도계 창) =====================
+# 온도계 관: 관의 '왼쪽 위 끝'과 '오른쪽 아래 끝'을 measure.py 로 잼
+#   GAUGE_LEFT/TOP = 왼쪽 위 끝 좌표,  WIDTH = 오른쪽x - 왼쪽x,  HEIGHT = 아래y - 위y
+GAUGE_LEFT   = 2721     # 관 가운데(측정 2729~2734)를 중심으로 좌우 여유를 둬서 20폭으로
+GAUGE_TOP    = 75       # 관 맨 위 (측정값)
 GAUGE_WIDTH  = 20
-GAUGE_HEIGHT = 85
+GAUGE_HEIGHT = 130      # 관 맨 위 75 ~ 맨 아래 205
 
-PLUS_BTN  = (1179, 284)
-MINUS_BTN = (1257, 284)
+# 식장이 창이 열려있는지 확인할 점 — 창 안의 진초록 빈 배경 아무 데나 한 점
+# (온도계 왼쪽 아래나 오른쪽 위 빈 곳. 요리 중에도 절대 안 가려지는 곳으로)
+COOK_BG_POINT = (3145, 244)     # 측정값
+COOK_BG_RGB   = (23, 59, 21)    # 그 점의 색 (measure.py 측정값)
+
+# 온도 조절 키 (꾹 누름). 게임 업데이트로 +/- 버튼 대신 키보드로 가능해짐.
+PLUS_KEY  = ","         # 온도 올리기(+)  — 키보드의 < 키 (Shift 없이)
+MINUS_KEY = "."         # 온도 내리기(-)  — 키보드의 > 키 (Shift 없이)
+# 키를 '누르고 있는' 동안 윈도우는 같은 키 신호를 계속 반복해서 보냄(자동 반복).
+# 프로그램이 누르면 그 반복이 안 생기므로, 사람이 꾹 누를 때와 똑같이 흉내냄.
+KEY_REPEAT_DELAY = 0.5      # 처음 누른 뒤 반복이 시작되기까지(초) — 윈도우 기본값
+KEY_REPEAT_EVERY = 0.033    # 반복 간격(초) — 윈도우 기본값 (초당 약 30번)
+# 키가 안 먹으면(온도가 안 움직이면) 식장이 창을 한 번 클릭해서 활성화해야 할 수
+# 있음. 그럴 땐 식장이 창 안의 빈 배경 좌표를 넣으면 시작 직후 한 번 클릭함.
+COOK_FOCUS_CLICK = None     # 예: (1300, 330).  None = 클릭 안 함
+
+# ===================== 제작 창 (재료 넣고 시작 누르는 창) =====================
 BTN_JITTER = 9
-START_BTN = (1152, 388)
+START_BTN = (2583, 391)     # 초록 '시작' 버튼 중심
+START_RGB = (76, 176, 81)   # 시작 버튼 초록색 — 이게 보이면 '제작 창 열림'으로 판단
 
-YELLOW_RGB = (239, 231, 107)
-RED_RGB    = (189, 44, 33)
+YELLOW_RGB = (242, 235, 88)     # 수은 노란 부분 (업데이트 후 측정값)
+RED_RGB    = (190, 54, 42)      # 수은 빨간 부분 (업데이트 후 측정값)
 COLOR_TOL  = 50
 MIN_PIXELS = 3
 
@@ -73,43 +98,58 @@ MOMENTUM_UP   = 0.06
 MOMENTUM_DOWN = 0.03
 DEADBAND   = 0.03
 
-# ===================== 인벤토리 / 슬롯 (이 컴퓨터 좌표 고정) =====================
-CELL1_CENTER = (772, 65)   # 인벤토리 첫 칸(왼쪽 위) 중심 좌표
-PITCH_X = 42.2          # 옆 칸까지 가로 간격
-PITCH_Y = 41.5          # 아래 칸까지 세로 간격
+# ===================== 인벤토리 / 슬롯 (제작 창 안) =====================
+# 인벤토리 간격은 '첫 칸'과 '첫 줄 맨 오른쪽 칸', '둘째 줄 첫 칸'을 재서 계산:
+#   PITCH_X = (맨오른쪽x - 첫칸x) / 5,   PITCH_Y = 둘째줄y - 첫칸y
+CELL1_CENTER = (2411, 174)  # 제작 창 인벤토리 첫 칸(왼쪽 위) 중심 좌표
+PITCH_X = 42            # 옆 칸까지 가로 간격 ((2620-2411)/5 = 41.8)
+PITCH_Y = 42            # 아래 칸까지 세로 간격 (칸이 정사각 배열이라 가로와 같음 — 스샷에서 확인)
 COLS = 6
 ROWS = 5
 CELL_SIZE = 32          # capture_items.py와 같은 값
 SEARCH_MARGIN = 4       # 계산된 칸 위치가 어긋나도 실제 아이콘 중심을 스스로 찾는 여유 범위
                         # (칸 간격 41px보다 너무 넓으면 옆 칸까지 침범해서 오작동하니 좁게)
+# 재료를 넣은 칸은 하늘색 테두리가 생김 → 인식할 때 테두리는 지우고 비교
+SEL_BORDER_RGB = (52, 188, 228)
 
-SLOT1_CENTER = (1083, 86)  # 요리창 재료 슬롯 1번(맨 왼쪽 검은 칸) 중심
-SLOT_PITCH_X = 51       # 슬롯 간 가로 간격
-NUM_SLOTS = 5           # 지금 열려있는 슬롯 수 (5개 열리면 5로)
+SLOT1_CENTER = (2432, 102)  # 제작 창 재료 슬롯 1번(맨 왼쪽 검은 칸) 중심
+SLOT_PITCH_X = 42       # 슬롯 간 가로 간격 (2474-2432)
+NUM_SLOTS = 3           # 지금 열려있는 슬롯 수 (늘어나면 숫자만 바꾸기)
+SLOT_CHECK = 14         # 슬롯 채움 검사 상자 크기(px) — 슬롯 전체(32px)를 보면
+                        # 슬롯 사이/테두리의 밝은 초록 배경이 섞여서 '빈 슬롯'을
+                        # '이미 참'으로 오판함(재료를 덜 넣고 시작하는 사고의 원인).
+                        # 그래서 슬롯 정중앙의 작은 상자만 봄.
 
 # ===================== 레시피 =====================
 # (재료이름, 넣을 개수) — 이름은 items 폴더의 파일명과 똑같이.
-# 개수만큼 드래그함 (슬롯 1번부터 차례로). 합계는 슬롯 수(5) 이하로.
+# 개수만큼 넣음. 합계는 슬롯 수(NUM_SLOTS) 이하로.
+# 예) RECIPE = [("빨간꽃", 1), ("노란꽃", 2)]
 RECIPE = [
-    ("버섯", 1),
-    ("쌀", 1),
-    ("최상급향신료", 3),
 ]
 
 LOOP = True             # True면 재료가 떨어질 때까지 자동 반복 (False면 한 판만)
-SCAN_EVERY = 5          # 인벤토리 스캔 주기(판) — 재료 양이 많아 칸 배치가 자주 안 바뀌므로
-                        # 5판에 1번만 스캔하고 나머지는 지난 결과를 재사용.
+
+# 재료를 요리창에 넣는 방식.
+#   True  = 우클릭 (게임 업데이트 후 방식) — 인벤토리 칸을 우클릭하면 게임이
+#           알아서 빈 슬롯에 넣어줌. 드래그보다 훨씬 빠르고 놓칠 일이 없음.
+#           한 칸에 여러 개 쌓여 있으면 같은 칸을 계속 우클릭해서 여러 개 넣음.
+#   False = 예전 드래그 방식 (게임이 또 바뀌면 이걸로 되돌리면 됨)
+USE_RIGHT_CLICK = True
+SCAN_EVERY = 10         # 인벤토리 스캔 주기(판) — 재료 양이 많아 칸 배치가 자주 안 바뀌므로
+                        # 10판에 1번만 스캔하고 나머지는 지난 결과를 재사용.
                         # 오류가 나거나 재료가 모자라 보이면 즉시 다시 스캔함.
 
-# ----- 요리창 다시 열기 (LOOP용) -----
-# 요리가 끝나면 음식만들기 창이 닫히므로, 반복하려면 다시 여는 클릭이 필요.
-# JOB_BTN     = 화면 아래 메뉴의 "직업" 아이콘 중심 좌표.
-#               직업 창이 요리 중에도 계속 열려있다면 None으로 (클릭 생략).
+# ----- 제작 창 다시 열기 (LOOP용) -----
+# 요리가 끝났을 때 제작 창이 닫혀 있으면, 반복하려면 다시 여는 클릭이 필요.
+# (제작 창이 계속 열려 있으면 이 클릭은 안 함)
+# JOB_KEY     = 직업 창을 여는 키보드 단축키 (게임 업데이트로 F2 로 열림).
+#               None 으로 하면 예전처럼 JOB_BTN(아이콘 좌표)을 클릭함.
 # JOB_ACT_BTN = 직업 창의 "직업활동" 버튼 중심 좌표.
-JOB_BTN     = (437, 698)     # 아래 메뉴바의 "직업" 아이콘
-JOB_ACT_BTN = (685, 246)     # 직업 창의 "직업활동" 버튼
-GAUGE_BG_RGB = (40, 88, 47)   # 음식만들기 창의 온도계 주변 진초록 (열림 확인용)
+JOB_KEY     = "f2"           # 직업 창 열기 키
+JOB_BTN     = None           # (JOB_KEY 를 쓰면 필요 없음) 아래 메뉴바의 "직업" 아이콘
+JOB_ACT_BTN = (2277, 373)    # 직업 창의 "직업활동" 버튼
 REOPEN_WAIT = 8         # 창 열림 최대 대기(초)
+COOK_OPEN_WAIT = 6      # 시작 누른 뒤 식장이 창이 뜰 때까지 최대 대기(초)
 MATCH_THRESHOLD = 50    # 기본 인식 기준 (차이값) — 실사용 결과 50이 잘 맞음. 오인식하면 낮추기
 # 재료별로 다른 기준이 필요하면 여기에 추가 (예: {"버섯": 45})
 MATCH_THRESHOLDS = {}
@@ -122,23 +162,17 @@ SHIFT = 2               # (구) 좌표 미세 어긋남 보정 — 지금은 ALI
 ALIGN = 7               # 아이콘을 상하좌우 ±이 픽셀까지 밀어보며 가장 잘맞는 위치를 찾음
                         # (밝은픽셀 평균 방식이 숫자배지에 끌려 불안정하던 문제 해결. 창이 조금 밀려도 흡수)
 MIN_ITEM_PX = 40        # 칸 중앙에 밝은 픽셀이 이보다 적으면 빈 칸으로 봄
-MIN_SLOT_PX = 40        # 요리창 슬롯 안 밝은 픽셀이 이보다 적으면 '빈 슬롯'으로 봄 (드래그 검증용)
+MIN_SLOT_PX = 10        # 슬롯 중앙 상자(SLOT_CHECK) 안 밝은 픽셀이 이보다 적으면 '빈 슬롯'
+                        # 검사 면적이 32x32(1024px)에서 14x14(196px)로 줄어서 40→10으로 맞춤
 COOK_TIMEOUT = 90       # 요리 1판 최대 대기(초)
 
 # ----- 오류 자가복구 / 자동 재시작 -----
-# 오류가 나면 먼저 스스로 점검(좌표 재보정 → 요리창 다시 열기 → 가방 열기 →
-# 인벤토리 재스캔)하고 곧바로 재시도함. 연속으로 MAX_FIX_TRIES번 실패하면
+# 오류가 나면 먼저 스스로 점검(제작 창 다시 열기 → 인벤토리 재스캔)하고
+# 곧바로 재시도함. 연속으로 MAX_FIX_TRIES번 실패하면
 # 그때는 RETRY_SEC 뒤에 자동으로 F8을 누른 것처럼 다시 시작함.
 # RETRY_SEC=None이면 자동 재시작 안 함. 사용자가 직접 F8로 끈 경우엔 둘 다 안 함.
 RETRY_SEC = 60
 MAX_FIX_TRIES = 3
-
-# ----- 가방(아이템 창) 자동 열기 -----
-# 재료 넣기 전에 가방(아이템) 창이 안 보이면 자동으로 한 번 열어봄.
-# 열 방법을 하나는 설정해야 함: 단축키가 있으면 BAG_KEY, 없으면 BAG_BTN(아이콘 좌표).
-BAG_KEY = None            # 가방 여는 키보드 단축키 (예: "b"). 없으면 None
-BAG_BTN = None            # 아래 메뉴바의 가방(아이템) 아이콘 중심 좌표 — measure.py로 측정 (예: (390, 698))
-BAG_WAIT = 6              # 가방 창 열림 최대 대기(초)
 
 # ----- 텔레그램 알림 -----
 # 오류나 재료 부족으로 멈추면 텔레그램으로 알려줌. 설정 방법:
@@ -149,27 +183,21 @@ BAG_WAIT = 6              # 가방 창 열림 최대 대기(초)
 # 두 값을 다 채우면 알림이 켜짐. 비워두면 알림 없이 기존처럼 동작.
 TELEGRAM_TOKEN   = ""    # ← 다운로드 후 각 컴퓨터에서 봇 토큰을 여기 붙여넣기
 TELEGRAM_CHAT_ID = ""    # ← chat_id도 여기에 (저장소가 공개라서 깃허브엔 안 올림)
-NOTIFY_NAME      = "규남노트북"   # 알림 앞에 붙는 이름 — 컴퓨터마다 다르게 (예: "정희노트북")
+NOTIFY_NAME      = "규남본체"     # 알림 앞에 붙는 이름 — 컴퓨터마다 다르게 (예: "정희노트북")
 NOTIFY_COOLDOWN  = 600    # 같은 내용의 알림을 다시 보내기까지 최소 간격(초) — 도배 방지
-REPORT_EVERY_MIN = 30     # 이 간격(분)마다 누적 완료 판수를 현황 보고로 보냄. 0이면 끔
+REPORT_EVERY_MIN = 0      # 이 간격(분)마다 누적 완료 판수를 현황 보고로 보냄. 0이면 끔
+                          # (요청대로 꺼둠 — 다시 켜려면 30 등으로)
+ERR_NOTIFY_ONCE  = True   # 오류 알림은 '한 번만' 보내기 — 자동 재시작이 반복 실패해도
+                          # 다시 안 보내고, 한 판이라도 성공하거나 F8을 직접 누르면
+                          # 그때 풀려서 다음 오류엔 다시 보냄 (알림 도배 방지)
+TG_COMMANDS      = True   # 폰 텔레그램에서 '현황' 이라고 보내면 스샷+상태를 답장
+TG_POLL_SEC      = 5      # 텔레그램 명령을 확인하는 주기(초)
 SEND_SCREENSHOT  = True   # 현황보고/오류 알림에 화면 스크린샷을 같이 보낼지
 SHOT_MAX_W       = 1920   # 스크린샷 가로 최대 폭(px) — 넘으면 축소해서 전송(용량/속도)
 
 # (컴퓨터별 프로필/자동 추적 기능은 제거함 — 위 좌표를 이 컴퓨터에 고정으로 사용.
 #  게임 창을 옮기지 말고 그대로 둘 것. 다른 컴퓨터에서 쓰려면 위 좌표들을
 #  그 컴퓨터에서 measure.py로 다시 재서 직접 바꿔주면 됨.)
-
-# ===================== 창 자동 추적 (꺼짐 — 아래 WINDOW_FOLLOW=False) =====================
-# 각 UI가 어느 게임 창 소속인지 알고, 실행 중 그 창의 현재 위치를 찾아
-# "기준 위치에서 움직인 만큼" 좌표를 자동 보정함. → 창 옮겨도 재측정 불필요.
-# (창 크기는 그대로 두어야 함. 크기를 바꾸면 재측정 필요)
-WINDOW_FOLLOW = False   # 창 추적 끔 — 프로필/기본값의 고정좌표만 사용. 창을 옮기면 안 됨
-# 좌표를 측정했던 당시의 각 창 왼쪽위(left, top) — pygetwindow로 확인한 값
-REF_COOK = (3088, 0)    # "음식만들기" 창
-REF_ITEM = (2815, 0)    # "아이템" 창
-REF_JOB  = (2557, 0)    # "직업" 창
-# JOB_BTN(아래 메뉴바 직업 아이콘)은 메인 게임창 소속이라 추적 안 함 — 메인창 옮기면 재측정
-# ==============================================================================
 
 pyautogui.PAUSE = 0
 pyautogui.FAILSAFE = True
@@ -182,86 +210,17 @@ _scan_cache = None       # 마지막 인벤토리 스캔 결과 {이름: [좌표
 _rounds_since_scan = 0   # 마지막 스캔 이후 재료를 넣은 판 수
 _fail_detail = ""        # 마지막 실패의 상세 내용 (알림 메시지에 덧붙임)
 _last_notify = {}        # 알림 종류별 마지막 전송 시각 (같은 내용 도배 방지)
+_err_notified = False    # 오류 알림을 이미 보냈는지 — 한 판 성공/F8 누르면 풀림
 _rounds_done = 0         # 프로그램 시작 후 완료한 판 수 (누적)
 _session_t0 = time.time()        # 프로그램 시작 시각
 _last_report = time.time()       # 마지막 현황 보고 시각
 _rounds_at_report = 0            # 마지막 보고 시점의 누적 판수 (최근 증가분 계산용)
 
-# 측정된 원본 좌표 보관 (창 이동 보정의 기준값). recalibrate가 여기에 delta를 더함.
-_BASE_COORD = {
-    "GAUGE_LEFT": GAUGE_LEFT, "GAUGE_TOP": GAUGE_TOP,
-    "PLUS_BTN": PLUS_BTN, "MINUS_BTN": MINUS_BTN, "START_BTN": START_BTN,
-    "SLOT1_CENTER": SLOT1_CENTER, "CELL1_CENTER": CELL1_CENTER,
-    "JOB_ACT_BTN": JOB_ACT_BTN,
-}
-
 try:
     import pygetwindow as _gw
 except Exception:
     _gw = None
-    WINDOW_FOLLOW = False
 
-
-def _win_origin(title, ref=None):
-    """제목이 정확히 title인 창의 (left, top). 못 찾으면 None.
-
-    같은 제목의 창이 여러 개 잡히면(이전 세션의 유령 창 등) ref(기준 위치)에
-    제일 가까운 걸 골라서, 엉뚱한 창을 잡아 좌표가 크게 튀는 걸 방지함.
-    """
-    if not (WINDOW_FOLLOW and _gw):
-        return None
-    try:
-        cands = [(w.left, w.top) for w in _gw.getAllWindows()
-                 if w.title == title and w.width > 0]
-    except Exception:
-        return None
-    if not cands:
-        return None
-    if len(cands) > 1 and ref is not None:
-        cands.sort(key=lambda p: (p[0] - ref[0]) ** 2 + (p[1] - ref[1]) ** 2)
-    return cands[0]
-
-
-def _win_origin_stable(title, ref=None, tries=8, gap=0.12):
-    """창이 막 열리는 중이면 슬라이드/애니메이션으로 위치가 흔들릴 수 있어서,
-    연속으로 같은 값이 두 번 나올 때까지 기다렸다가 반환 (최대 tries번)."""
-    last = None
-    for _ in range(tries):
-        o = _win_origin(title, ref=ref)
-        if o is not None and o == last:
-            return o
-        last = o
-        time.sleep(gap)
-    return last
-
-
-def recalibrate(which="all"):
-    """열려있는 창의 현재 위치를 찾아, 소속 좌표들을 기준+이동량으로 갱신.
-
-    JOB_ACT_BTN(직업활동 버튼)은 창 위치 추적에서 제외함 — '직업' 창 감지가
-    엉뚱한 값을 반환하는 문제가 있어, 고정 좌표를 그대로 씀(직업 버튼 누르고
-    바로 그 고정 좌표로 이동해 클릭).
-    """
-    global GAUGE_LEFT, GAUGE_TOP, PLUS_BTN, MINUS_BTN, START_BTN
-    global SLOT1_CENTER, CELL1_CENTER
-    if not WINDOW_FOLLOW:
-        return
-    B = _BASE_COORD
-    if which in ("all", "cook"):
-        o = _win_origin_stable("음식만들기", ref=REF_COOK)
-        if o:
-            dx, dy = o[0] - REF_COOK[0], o[1] - REF_COOK[1]
-            GAUGE_LEFT = B["GAUGE_LEFT"] + dx
-            GAUGE_TOP = B["GAUGE_TOP"] + dy
-            PLUS_BTN = (B["PLUS_BTN"][0] + dx, B["PLUS_BTN"][1] + dy)
-            MINUS_BTN = (B["MINUS_BTN"][0] + dx, B["MINUS_BTN"][1] + dy)
-            START_BTN = (B["START_BTN"][0] + dx, B["START_BTN"][1] + dy)
-            SLOT1_CENTER = (B["SLOT1_CENTER"][0] + dx, B["SLOT1_CENTER"][1] + dy)
-    if which in ("all", "item"):
-        o = _win_origin_stable("아이템", ref=REF_ITEM)
-        if o:
-            dx, dy = o[0] - REF_ITEM[0], o[1] - REF_ITEM[1]
-            CELL1_CENTER = (B["CELL1_CENTER"][0] + dx, B["CELL1_CENTER"][1] + dy)
 
 ZONE_CENTER = (ZONE_TOP + ZONE_BOT) / 2
 _yellow = np.array(YELLOW_RGB, dtype=int)
@@ -315,39 +274,20 @@ def smooth_move_to(x, y, duration, bow=0):
         time.sleep(duration / steps)
 
 
-def hold_button(sct, button, release_when, label):
-    x, y = jittered(button)
-    smooth_move_to(x, y, random.uniform(0.16, 0.3), bow=6)  # +/- 간 이동을 살짝 더 느긋하게
-    pyautogui.mouseDown()
-    t0 = time.time()
-    max_hold = MAX_HOLD * random.uniform(0.8, 1.0)
-    try:
-        while running and alive:
-            elapsed = time.time() - t0
-            if elapsed >= max_hold:
-                break
-            if elapsed >= MIN_HOLD:   # 최소 시간 지나기 전엔 순간 터치처럼 바로 떼지 않음
-                pos = read_pos(sct)
-                if pos is not None and release_when(pos):
-                    break
-            time.sleep(SAMPLE_DT)
-    finally:
-        pyautogui.mouseUp()
-    print(f"  {label} {time.time()-t0:.2f}초 꾹 누름", " " * 20)
-    time.sleep(random.uniform(*MIN_GAP))
-
-
-def hold_toward(sct, button, sign, label):
-    """버튼을 꾹 누르되, 속도로 예측한 위치가 목표 중심에 닿으면 미리 뗌.
+def hold_toward(sct, key, sign, label):
+    """키를 꾹 누르되, 속도로 예측한 위치가 목표 중심에 닿으면 미리 뗌.
 
     sign=+1: 가열(+, 수은 상승=pos 감소) → pred가 중심 이하로 내려오면 뗌
     sign=-1: 냉각(-, 수은 하강=pos 증가) → pred가 중심 이상으로 올라오면 뗌
     떼고 나선 HOLD_GAP만큼 관성 지켜보며 대기.
+
+    게임 업데이트로 +/- 버튼을 마우스로 누르는 대신 키보드(',' '.')로 함.
+    사람이 키를 꾹 누르면 윈도우가 같은 키 신호를 계속 반복해서 보내므로
+    (자동 반복), 누르는 동안 그 반복도 똑같이 흉내냄.
     """
-    x, y = jittered(button)
-    smooth_move_to(x, y, random.uniform(0.14, 0.26), bow=6)
-    pyautogui.mouseDown()
+    keyboard.press(key)
     t0 = time.time()
+    next_repeat = t0 + KEY_REPEAT_DELAY
     hist = []
     try:
         while running and alive:
@@ -366,15 +306,23 @@ def hold_toward(sct, button, sign, label):
                         break
                     if sign < 0 and pred >= ZONE_CENTER:
                         break
+            if now >= next_repeat:
+                keyboard.press(key)          # 꾹 누르고 있을 때의 자동 반복 신호
+                next_repeat = now + KEY_REPEAT_EVERY
             time.sleep(SAMPLE_DT)
     finally:
-        pyautogui.mouseUp()
+        keyboard.release(key)
     print(f"  {label} {time.time()-t0:.2f}초 꾹 누름", " " * 18)
-    # 뗀 직후 반대 버튼 위로 미리 이동해 대기 (사람처럼) → 넘치는 순간 이동 없이 바로 누름
-    opposite = MINUS_BTN if sign > 0 else PLUS_BTN
-    ox, oy = jittered(opposite)
-    smooth_move_to(ox, oy, random.uniform(0.12, 0.22), bow=5)
     time.sleep(random.uniform(*HOLD_GAP))
+
+
+def release_keys():
+    """혹시 눌린 채 남은 온도 키를 뗌 (오류/정지 시 안전용)."""
+    for k in (PLUS_KEY, MINUS_KEY):
+        try:
+            keyboard.release(k)
+        except Exception:
+            pass
 
 
 def idle_wander(loops=None):
@@ -439,6 +387,28 @@ def human_drag(src, dst):
     time.sleep(random.uniform(1.0, 1.9))
 
 
+def right_click_item(pos):
+    """인벤토리 칸을 우클릭해서 재료를 요리창으로 보냄 (드래그 대체).
+
+    게임 업데이트로 우클릭 한 번이면 빈 슬롯에 자동으로 들어가게 바뀜.
+    드래그처럼 누른 채 이동하지 않으니 훨씬 빠르고, 이동 중 놓쳐서 실패하는
+    일도 없음. 어느 슬롯에 들어갈지는 게임이 정하므로, 넣은 뒤에는 '슬롯이
+    하나 더 찼는지'로 성공을 판정함 (fill_slots 참고).
+    """
+    x, y = jittered(pos, 4)
+    smooth_move_to(x, y, random.uniform(0.25, 0.45), bow=10)
+    time.sleep(random.uniform(0.1, 0.2))
+    pyautogui.mouseDown(button="right")
+    time.sleep(random.uniform(0.05, 0.12))
+    pyautogui.mouseUp(button="right")
+    time.sleep(random.uniform(0.35, 0.6))     # 게임이 슬롯에 넣는 동안 잠깐 대기
+
+
+def filled_slot_list(sct, target):
+    """슬롯 0~target-1 중 실제로 찬 것들의 번호 목록."""
+    return [i for i in range(target) if slot_filled(sct, i)]
+
+
 # ---------------------------------------------------------------- 아이템 인식
 
 def load_templates():
@@ -491,6 +461,30 @@ def match_region(region, tpl):
     return float(np.where(valid, d, np.inf).min())
 
 
+_sel = np.array(SEL_BORDER_RGB, dtype=int)
+_sel_ring = None
+
+
+def grab_cell(sct, nx, ny):
+    """칸 하나를 (CELL_SIZE + 2*ALIGN) 크기로 캡처. 넣은 칸의 하늘색 테두리는 지움.
+
+    제작 창 인벤토리는 재료를 넣은 칸에 하늘색 테두리를 그림. 테두리는 밝아서
+    그림의 일부로 섞여 들어가 인식을 흐리므로, 칸 가장자리 쪽에 있는 그 색만
+    검은색(빈 배경)으로 바꿈. 가운데(그림 부분)는 건드리지 않음.
+    """
+    global _sel_ring
+    size = CELL_SIZE + 2 * ALIGN
+    shot = sct.grab({"left": nx - size // 2, "top": ny - size // 2,
+                     "width": size, "height": size})
+    region = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1].copy()
+    if _sel_ring is None:
+        yy, xx = np.mgrid[:size, :size] - (size - 1) / 2
+        _sel_ring = np.maximum(np.abs(yy), np.abs(xx)) >= CELL_SIZE // 2 - 3
+    border = _sel_ring & np.all(np.abs(region - _sel) <= 45, axis=-1)
+    region[border] = 0
+    return region
+
+
 def locate_true_center(sct, nominal_cx, nominal_cy):
     """계산된 칸 중심 근처를 넓게 캡처해서 실제 아이콘(밝은 픽셀)의 중심을 찾음."""
     m = SEARCH_MARGIN
@@ -510,8 +504,8 @@ def locate_true_center(sct, nominal_cx, nominal_cy):
 
 def park_mouse():
     """스캔 전에 마우스를 인벤토리 밖 빈 곳으로 치워둠 (커서가 아이콘 덮는 것 방지)."""
-    px = int(CELL1_CENTER[0])
-    py = int(CELL1_CENTER[1] + ROWS * PITCH_Y + 55)   # 마지막 줄 아래 = 아이템 정보 패널(빈 곳)
+    px = int(CELL1_CENTER[0] + 2.5 * PITCH_X)
+    py = int(CELL1_CENTER[1] - 0.8 * PITCH_Y)   # 인벤토리 첫 줄 바로 위 = '재료 n/n' 글자 줄(빈 곳)
     smooth_move_to(px, py, random.uniform(0.15, 0.3), bow=8)
     time.sleep(random.uniform(0.1, 0.2))
 
@@ -541,14 +535,11 @@ def scan_inventory(sct, templates):
     park_mouse()
     found = {}
     min_diffs = {name: 1e9 for name in templates}
-    size = CELL_SIZE + 2 * ALIGN
     for r in range(ROWS):
         for c in range(COLS):
             nx = int(round(CELL1_CENTER[0] + c * PITCH_X))
             ny = int(round(CELL1_CENTER[1] + r * PITCH_Y))
-            shot = sct.grab({"left": nx - size // 2, "top": ny - size // 2,
-                             "width": size, "height": size})
-            region = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
+            region = grab_cell(sct, nx, ny)
             # 빈 칸 판정: 중앙(칸 크기) 안에 밝은 픽셀이 거의 없으면 건너뜀
             center = region[ALIGN + TOP_CUT:ALIGN + CELL_SIZE, ALIGN:ALIGN + CELL_SIZE]
             if int((center.sum(axis=2) > 90).sum()) < MIN_ITEM_PX:
@@ -573,24 +564,69 @@ def scan_inventory(sct, templates):
     return found, min_diffs
 
 
+def cell_still_has(sct, templates, name, pos):
+    """넣기 직전 검증 — 캐시된 칸 '하나만' 다시 캡처해서 아직 그 재료가 맞는지 확인.
+
+    중요: '요청한 재료의 기준 안에 드는가'만 보면 안 됨. 재료끼리 조금 닮은
+    경우(예: 쌀과 향신료) 다른 재료도 기준(MATCH_THRESHOLD) 안에 들어와서
+    그대로 통과해버려, 캐시가 낡았을 때 엉뚱한 재료가 들어가는 사고가 남
+    (버섯,쌀,버섯,쌀 처럼). 그래서 스캔과 똑같이 '등록된 모든 재료 중
+    이 재료가 가장 잘 맞는지'까지 확인함.
+
+    비용은 전체 스캔(30칸)에서 한 칸을 보는 것과 같음(약 0.05초).
+    """
+    nx, ny = int(round(pos[0])), int(round(pos[1]))
+    region = grab_cell(sct, nx, ny)
+    center = region[ALIGN + TOP_CUT:ALIGN + CELL_SIZE, ALIGN:ALIGN + CELL_SIZE]
+    if int((center.sum(axis=2) > 90).sum()) < MIN_ITEM_PX:
+        return False                       # 빈 칸이 됐음
+    # 스캔과 동일하게 '모든 재료 중 최적'을 뽑아서, 그게 요청한 재료여야 통과
+    best_name, best_diff = None, 1e9
+    for other, tpl_list in templates.items():
+        for tpl in tpl_list:
+            d = match_region(region, tpl)
+            if d < best_diff:
+                best_name, best_diff = other, d
+    if best_name != name:
+        print(f"       (칸 확인: '{name}' 인 줄 알았는데 '{best_name}' 가 더 잘 맞음"
+              f" — 차이 {best_diff:.0f}) → 이 칸 안 씀")
+        return False
+    return best_diff <= threshold_for(name)
+
+
 # ---------------------------------------------------------------- 단계별 동작
 
-_bg = np.array(GAUGE_BG_RGB, dtype=int)
+_cook_bg = np.array(COOK_BG_RGB, dtype=int)
+_start_rgb = np.array(START_RGB, dtype=int)
 
 
 def window_open(sct):
-    """음식만들기 창이 열려있는지 — 온도계 관 '바로 위'의 배경이 보이는지로 판단.
+    """식장이 창(온도계 창)이 열려있는지 — COOK_BG_POINT 의 진초록 배경이 보이는지로 판단.
 
-    관 자체(GAUGE_TOP~+HEIGHT)를 보면 요리 중엔 수은(빨강/노랑)이 채우고 있어서
-    배경이 안 보이는 게 정상이라, 요리 중인데 "닫혔다"고 오판하게 됨.
-    그래서 수은이 절대 닿지 않는, 관 바로 위쪽 얇은 띠만 확인함 — 여긴 창이
-    열려있는 한 항상 배경색이어야 하고, 창이 실제로 닫힐 때만 사라짐.
+    온도계 관 자체를 보면 요리 중엔 수은(빨강/노랑)이 채우고 있어서 배경이
+    안 보이는 게 정상이라 오판하게 됨. 그래서 요리 중에도 절대 안 가려지는
+    빈 배경 한 점(주변 5x5)만 확인함 — 창이 실제로 닫힐 때만 사라짐.
     """
-    region = {"top": max(GAUGE_TOP - 22, 0), "left": GAUGE_LEFT,
-              "width": GAUGE_WIDTH, "height": 14}
-    img = np.asarray(sct.grab(region), dtype=int)[:, :, :3][:, :, ::-1]
-    near_bg = np.all(np.abs(img - _bg) <= 30, axis=-1)
+    x, y = COOK_BG_POINT
+    img = np.asarray(sct.grab({"left": x - 2, "top": y - 2, "width": 5, "height": 5}),
+                     dtype=int)[:, :, :3][:, :, ::-1]
+    near_bg = np.all(np.abs(img - _cook_bg) <= 30, axis=-1)
     return near_bg.mean() > 0.5
+
+
+def craft_open(sct):
+    """제작 창이 열려있는지 — 초록 '시작' 버튼이 보이는지로 판단.
+
+    버튼 위에 마우스가 올라가 있으면 색이 살짝 바뀔 수 있어서, 버튼 가로로
+    세 군데(왼쪽/가운데/오른쪽)를 보고 하나라도 초록이면 열림으로 봄.
+    """
+    x, y = START_BTN
+    for dx in (-25, 0, 25):
+        img = np.asarray(sct.grab({"left": x + dx - 2, "top": y - 2, "width": 5, "height": 5}),
+                         dtype=int)[:, :, :3][:, :, ::-1]
+        if np.all(np.abs(img - _start_rgb) <= 40, axis=-1).mean() > 0.5:
+            return True
+    return False
 
 
 def open_job_window():
@@ -603,16 +639,24 @@ def open_job_window():
     if win_visible("직업") is True:
         print("직업 창 이미 열려있음")
         return True
-    if JOB_BTN is None:
-        print("[설정 필요] JOB_BTN(직업 아이콘 좌표)이 없고 직업 창도 안 보임")
+    if JOB_KEY is None and JOB_BTN is None:
+        print("[설정 필요] JOB_KEY(단축키)나 JOB_BTN(직업 아이콘 좌표)이 없고 직업 창도 안 보임")
         return False
+
+    def press_job():
+        if JOB_KEY is not None:
+            print(f"  직업 창 열기 ({JOB_KEY.upper()} 키)")
+            keyboard.send(JOB_KEY)
+        else:
+            direct_click(JOB_BTN, "직업")
+
     if win_visible("직업") is None:
-        # pygetwindow로 확인 불가 → 예전 방식대로 클릭하고 시간만 기다림
-        direct_click(JOB_BTN, "직업")
+        # pygetwindow로 확인 불가 → 누르고 시간만 기다림
+        press_job()
         time.sleep(random.uniform(1.2, 2.0))
         return True
     for attempt in range(3):
-        direct_click(JOB_BTN, "직업")
+        press_job()
         t0 = time.time()
         while running and alive and time.time() - t0 < 4:
             if win_visible("직업") is True:
@@ -623,17 +667,17 @@ def open_job_window():
         if not (running and alive):
             return False
         print(f"  직업 창이 안 열림 → 다시 클릭 ({attempt + 2}번째 시도)")
-    print("[실패] 직업 창이 안 열림 — JOB_BTN 좌표 확인")
+    print("[실패] 직업 창이 안 열림 — JOB_KEY / JOB_BTN 확인")
     return False
 
 
 def reopen_window(sct):
-    """직업 → 직업활동 클릭으로 음식만들기 창을 다시 염. 성공하면 True.
+    """직업 → 직업활동 클릭으로 제작 창을 다시 염. 성공하면 True.
 
-    게임 구조: 직업 창을 연 뒤 '직업활동'을 누르면 음식만들기 창이 생기고
-    직업 창은 사라짐. 그래서 순서마다 실제로 됐는지 확인하고 안 됐으면 재시도:
+    게임 구조: 직업 창을 연 뒤 '직업활동'을 누르면 제작 창이 생김.
+    그래서 순서마다 실제로 됐는지 확인하고 안 됐으면 재시도:
       1) 직업 창이 열린 것을 확인 (open_job_window)
-      2) 직업활동 클릭 → 음식만들기 창이 뜨는지 확인, 안 뜨면 다시 클릭 (최대 3번)
+      2) 직업활동 클릭 → 제작 창이 뜨는지 확인, 안 뜨면 다시 클릭 (최대 3번)
     """
     if JOB_ACT_BTN is None:
         print("[설정 필요] JOB_ACT_BTN(직업활동 버튼 좌표)이 없어서 반복 불가")
@@ -644,22 +688,22 @@ def reopen_window(sct):
         direct_click(JOB_ACT_BTN, "직업활동")
         t0 = time.time()
         while running and alive and time.time() - t0 < REOPEN_WAIT:
-            if window_open(sct):
-                print("음식만들기 창 열림 확인")
+            if craft_open(sct):
+                print("제작 창 열림 확인")
                 time.sleep(random.uniform(1.0, 1.8))
                 return True
             time.sleep(0.2)
         if not (running and alive):
             return False
-        # 음식만들기가 안 떴음 — 직업 창이 사라졌으면 클릭은 먹었는데 뭔가 꼬인 것,
+        # 제작 창이 안 떴음 — 직업 창이 사라졌으면 클릭은 먹었는데 뭔가 꼬인 것,
         # 남아있으면 클릭이 빗나간 것. 어느 쪽이든 직업 창부터 다시 확보하고 재시도.
         if win_visible("직업") is False:
-            print("  직업활동은 눌렸는데 음식만들기 창이 안 뜸 → 직업 창부터 다시 열기")
+            print("  직업활동은 눌렸는데 제작 창이 안 뜸 → 직업 창부터 다시 열기")
             if not open_job_window():
                 return False
         else:
             print("  직업활동 클릭이 안 먹은 듯 (직업 창 그대로) → 다시 클릭")
-    print("[실패] 음식만들기 창이 안 열림 — 좌표/창 위치 확인")
+    print("[실패] 제작 창이 안 열림 — 좌표/창 위치 확인")
     return False
 
 
@@ -679,49 +723,40 @@ def win_visible(title):
         return None
 
 
-def bag_open():
-    """가방(아이템) 창이 보이는지. 확인 불가면 열려있다고 가정."""
-    v = win_visible("아이템")
-    return True if v is None else v
-
-
-def open_bag():
-    """가방 창이 안 보이면 한 번 열어봄. 열렸으면(또는 확인 불가면) True."""
-    if bag_open():
-        return True
-    print("가방(아이템) 창이 안 보임 → 열기 시도")
-    if BAG_KEY is not None:
-        keyboard.send(BAG_KEY)
-    elif BAG_BTN is not None:
-        direct_click(BAG_BTN, "가방")
-    else:
-        print("[설정 필요] BAG_KEY(단축키) 또는 BAG_BTN(가방 아이콘 좌표)을 "
-              "설정해야 자동으로 열 수 있음 — measure.py로 측정해서 입력")
-        return False
-    t0 = time.time()
-    while running and alive and time.time() - t0 < BAG_WAIT:
-        if bag_open():
-            print("가방 창 열림 확인")
-            time.sleep(random.uniform(0.8, 1.4))
-            return True
-        time.sleep(0.2)
-    print("[실패] 가방 창이 안 열림")
-    return False
-
-
 def slot_filled(sct, slot_index):
-    """요리창 재료 슬롯(0부터 셈)에 아이템이 실제로 들어있는지 확인.
+    """제작 창 재료 슬롯(0부터 셈)에 아이템이 실제로 들어있는지 확인."""
+    return slot_px(sct, slot_index) >= MIN_SLOT_PX
 
-    빈 슬롯은 어두운 검은 칸이라 밝은 픽셀이 거의 없음. 작은 영역 캡처
-    한 장이면 끝나서(수 ms) 넣어도 체감 속도엔 영향 없음.
+
+def slot_px(sct, slot_index):
+    """요리창 슬롯(0부터 셈) '중앙'의 밝은 픽셀 수 — 채움 판정의 원재료.
+
+    슬롯 전체(32px)가 아니라 중앙 SLOT_CHECK(14px)만 봄. 전체를 보면 슬롯
+    사이의 밝은 초록 배경이 검사에 섞여 들어와서, 빈 슬롯인데도 '이미 참'으로
+    오판함 → 재료를 덜 넣고 시작하는 사고가 났음(우클릭 방식에서 특히 치명적).
     """
     cx = int(SLOT1_CENTER[0] + slot_index * SLOT_PITCH_X)
     cy = int(SLOT1_CENTER[1])
-    half = CELL_SIZE // 2
+    half = SLOT_CHECK // 2
     shot = sct.grab({"left": cx - half, "top": cy - half,
-                     "width": CELL_SIZE, "height": CELL_SIZE})
+                     "width": SLOT_CHECK, "height": SLOT_CHECK})
     img = np.asarray(shot, dtype=int)[:, :, :3]
-    return int((img.sum(axis=2) > 90).sum()) >= MIN_SLOT_PX
+    return int((img.sum(axis=2) > 90).sum())
+
+
+def save_debug_slots(sct, tag="debug_slots"):
+    """요리창 슬롯 줄 전체를 캡처해 파일로 저장 — '이미 참' 오판 원인 확인용."""
+    from PIL import Image as _Image
+    left = int(SLOT1_CENTER[0] - CELL_SIZE)
+    top = int(SLOT1_CENTER[1] - CELL_SIZE)
+    width = int((NUM_SLOTS - 1) * SLOT_PITCH_X + CELL_SIZE * 2)
+    height = int(CELL_SIZE * 2)
+    shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
+    img = np.asarray(shot, dtype="uint8")[:, :, :3][:, :, ::-1]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{tag}.png")
+    _Image.fromarray(img).save(path)
+    print(f"       [진단] 슬롯 줄 캡처를 저장함: {path}")
+    return path
 
 
 def _scan_with_retries(sct, templates):
@@ -786,32 +821,72 @@ def fill_slots(sct, templates):
         print(f"[중단] 레시피 재료 수({len(plan)})가 열려있는 슬롯({NUM_SLOTS}개)을 넘음")
         return False
 
-    # 슬롯마다 반드시 한 번은 드래그함. (드래그 '전'에 slot_filled로 건너뛰던 로직은
-    #  제거 — 빈 슬롯이 밝게 읽히는 자리(예: 5번째 칸 테두리)가 있으면 '이미 찼다'고
-    #  오판해서 그 슬롯을 통째로 건너뛰는 버그가 있었음)
+    # 우클릭은 어느 슬롯에 들어갈지 게임이 정하므로, '슬롯 N을 채운다'가 아니라
+    # '찬 슬롯이 하나 늘었는지'로 성공을 판정함. (드래그 방식일 땐 왼쪽부터
+    # 빈 슬롯을 찾아 그리로 넣음 — 판정 방식은 동일)
     used = {}
-    for slot, name in enumerate(plan):
-        dst = (SLOT1_CENTER[0] + slot * SLOT_PITCH_X, SLOT1_CENTER[1])
+    rescanned = False    # 직전확인 어긋나서 이번 판에 이미 전체 재스캔을 했는지
+    target = len(plan)
+    px_list = [slot_px(sct, i) for i in range(target)]
+    filled = sum(1 for v in px_list if v >= MIN_SLOT_PX)
+    if filled:
+        # 새 판이면 슬롯은 전부 비어 있어야 정상. 여기서 0이 아니면 슬롯 좌표가
+        # 어긋났거나 기준값(MIN_SLOT_PX)이 안 맞는 것 — 그냥 넘어가면 재료를
+        # 덜 넣고 시작하게 되므로, 숫자를 남겨서 바로 알 수 있게 함.
+        print(f"  [주의] 넣기 전인데 슬롯 {filled}개가 '이미 참'으로 읽힘 "
+              f"— 밝은픽셀 {px_list} (기준 {MIN_SLOT_PX} 이상이면 참)")
+        print(f"         재료를 그만큼 덜 넣게 됩니다. 새 판인데 이 줄이 보이면 "
+              f"이 숫자들을 알려주세요.")
+        try:
+            save_debug_slots(sct)
+        except Exception:
+            pass
+    for name in plan:
+        if filled >= target:
+            break                    # 이미 다 찼음
         placed = False
-        # 드래그한 뒤 슬롯에 실제로 들어갔는지 확인. 안 들어갔으면(칸이 비었거나
-        # 드래그 튕김) 같은 재료의 다른 칸으로 재시도.
+        # 넣은 뒤 슬롯이 실제로 늘었는지 확인. 안 늘었으면(칸이 비었거나
+        # 클릭이 씹혔거나) 같은 재료의 다른 칸으로 재시도.
         while running and alive and not placed:
             idx = used.get(name, 0)
             if idx >= len(found.get(name, [])):
                 break                # 이 재료는 더 시도할 칸이 없음
             src = found[name][idx]
-            used[name] = idx + 1
-            print(f"'{name}' → 슬롯 {slot+1} 드래그")
-            human_drag(src, dst)
-            if slot_filled(sct, slot):
-                placed = True
+            # 넣기 직전, 그 칸 하나만 재확인(0.05초) — 캐시가 낡아 빈칸/다른
+            # 재료가 됐으면 엉뚱한 걸 집는 대신 즉시 전체 재스캔 (판당 1번만)
+            if not cell_still_has(sct, templates, name, src):
+                if not rescanned:
+                    print(f"  [직전확인] ({src[0]},{src[1]}) 칸이 더는 '{name}' 가 아님 → 즉시 전체 재스캔")
+                    found, min_diffs = _scan_with_retries(sct, templates)
+                    _scan_cache, _rounds_since_scan = found, 0
+                    used, rescanned = {}, True
+                else:
+                    print(f"  [직전확인] ({src[0]},{src[1]}) 칸 확인 실패 → 다음 칸으로")
+                    used[name] = idx + 1
+                continue
+            if USE_RIGHT_CLICK:
+                print(f"'{name}' 우클릭으로 넣기 ({filled + 1}/{target})")
+                right_click_item(src)
             else:
-                print(f"  [재시도] 슬롯 {slot+1}에 안 들어감 → 다른 칸에서 다시")
+                empty = [i for i in range(target) if i not in filled_slot_list(sct, target)]
+                slot = empty[0] if empty else filled
+                print(f"'{name}' → 슬롯 {slot+1} 드래그")
+                human_drag(src, (SLOT1_CENTER[0] + slot * SLOT_PITCH_X, SLOT1_CENTER[1]))
+            now = len(filled_slot_list(sct, target))
+            if now > filled:
+                filled = now
+                placed = True
+                # 성공한 칸은 그대로 둠 — 한 칸에 여러 개 쌓여 있으면 다음 개도
+                # 같은 칸에서 계속 꺼내 씀. 그 칸이 바닥나면 위 cell_still_has가
+                # 잡아내서 자동으로 다음 칸으로 넘어감.
+            else:
+                print(f"  [재시도] 안 들어감 → '{name}' 의 다른 칸에서 다시")
+                used[name] = idx + 1
         if not (running and alive):
             return False
         if not placed:
-            _fail_detail = f"슬롯 {slot+1}에 '{name}' 를 넣지 못함 (칸 부족/드래그 실패)"
-            print(f"[중단] 슬롯 {slot+1}에 '{name}' 를 넣지 못함")
+            _fail_detail = f"'{name}' 를 넣지 못함 (칸 부족/넣기 실패)"
+            print(f"[중단] '{name}' 를 넣지 못함 ({filled}/{target} 채움)")
             try:
                 save_debug_scan(sct)
             except Exception:
@@ -837,12 +912,33 @@ def cook_one_round(sct):
       온도계는 버튼을 어느 정도 꾹 눌러야 움직이고 떼도 관성으로 더 가는 시스템.
       그래서 누르는 동안 이동 '속도'로 앞을 예측(pred)해서 목표에 닿기 전에 미리 떼고,
       뗀 뒤엔 잠시 지켜보다가 필요하면 반대쪽을 꾹. (한 방향 연속 X)
-      '요리 끝'은 수은이 안 보이는 것만으로 판단하지 않고, 음식만들기 창이 실제로
+      '요리 끝'은 수은이 안 보이는 것만으로 판단하지 않고, 식장이 창이 실제로
       닫혔는지(초록 배경 사라짐)로 판단해 오검출을 막음.
     """
     print("시작 버튼 클릭!")
     human_click(START_BTN, jx=12, jy=4)
-    time.sleep(random.uniform(0.8, 1.4))
+
+    # 시작을 누르면 식장이 창(온도계)이 새로 뜸 — 뜰 때까지 기다림
+    t0 = time.time()
+    while running and alive and not window_open(sct):
+        if time.time() - t0 > COOK_OPEN_WAIT:
+            print(f"[문제] 시작을 눌렀는데 {COOK_OPEN_WAIT}초 동안 식장이 창이 안 뜸"
+                  f" — START_BTN / COOK_BG_POINT 좌표 확인")
+            return False
+        time.sleep(0.1)
+    if not (running and alive):
+        return False
+    print("식장이 창 열림 확인")
+    time.sleep(random.uniform(0.3, 0.6))
+    # 마우스를 시작 버튼 위에 그대로 두지 않고 식장이 창 쪽으로 옮겨둠 (사람처럼).
+    # 키가 안 먹는 컴퓨터면 COOK_FOCUS_CLICK 자리를 한 번 클릭해서 창을 활성화.
+    if COOK_FOCUS_CLICK is not None:
+        human_click(COOK_FOCUS_CLICK, jx=6, jy=6)
+    else:
+        mx = GAUGE_LEFT + GAUGE_WIDTH + random.randint(40, 120)
+        my = GAUGE_TOP + random.randint(10, max(GAUGE_HEIGHT - 10, 11))
+        smooth_move_to(mx, my, random.uniform(0.3, 0.5), bow=12)
+    time.sleep(random.uniform(0.2, 0.5))
 
     t_start = time.time()
     seen = False           # 수은을 한 번이라도 봤는지
@@ -855,9 +951,9 @@ def cook_one_round(sct):
     def do_hold(sign):
         nonlocal last_dir, last_press
         if sign > 0:
-            hold_toward(sct, PLUS_BTN, +1, "+"); last_dir = "+"
+            hold_toward(sct, PLUS_KEY, +1, "+"); last_dir = "+"
         else:
-            hold_toward(sct, MINUS_BTN, -1, "-"); last_dir = "-"
+            hold_toward(sct, MINUS_KEY, -1, "-"); last_dir = "-"
         last_press = time.time()
         history.clear()    # 누른 뒤엔 속도 이력 리셋
 
@@ -1011,7 +1107,7 @@ def _send_telegram_photo(caption, jpeg_bytes):
     _tg_urlopen(req, timeout=30)
 
 
-def notify(text, key=None, wait=False, photo=False):
+def notify(text, key=None, wait=False, photo=False, err=False):
     """봇 상태를 텔레그램으로 알림. 토큰/chat_id가 비어있으면 조용히 넘어감.
 
     - key가 같은 알림은 NOTIFY_COOLDOWN 안엔 다시 안 보냄 (같은 오류 도배 방지)
@@ -1019,8 +1115,15 @@ def notify(text, key=None, wait=False, photo=False):
     - wait=True는 프로그램이 곧 종료되는 경우용 (전송이 끝날 때까지 기다림)
     - photo=True면 화면 스크린샷을 캡션과 함께 보냄 (실패 시 글자만이라도 보냄)
     """
+    global _err_notified
     if not (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID):
         return
+    if err and ERR_NOTIFY_ONCE:
+        # 오류 알림은 복구될 때까지 한 번만 — 자동 재시작이 계속 실패해도 조용
+        if _err_notified:
+            print("  (오류 알림 생략 — 이미 한 번 보냄. 한 판 성공하면 다시 알림)")
+            return
+        _err_notified = True
     now = time.time()
     k = key or text
     if now - _last_notify.get(k, 0) < NOTIFY_COOLDOWN:
@@ -1066,6 +1169,88 @@ def maybe_report():
            f"(최근 {REPORT_EVERY_MIN}분간 {recent}판) · 상태: {state}", key="status", photo=True)
 
 
+def clear_err_notified():
+    """오류 알림 잠금 해제 — 한 판 성공했거나 사용자가 F8을 눌렀을 때 호출."""
+    global _err_notified
+    if _err_notified:
+        _err_notified = False
+        print("  (오류 알림 잠금 해제 — 다음 오류 때 다시 알림)")
+
+
+# ----- 폰에서 '현황' 이라고 보내면 스샷 답장 -----
+# 여러 컴퓨터가 같은 봇을 쓰기 때문에, 받은 메시지를 확정(offset+1)해버리면
+# 한 대만 받고 나머지는 못 받음. 그래서 offset=-1로 '가장 최근 메시지'만 훔쳐보고
+# 처리 여부는 각자 로컬에서 update_id로 기억함 → 모든 컴퓨터가 각자 답장함.
+# 특정 컴퓨터만 부르려면 '현황 규남' 처럼 이름 일부를 뒤에 붙이면 됨.
+_tg_seen_update = None
+
+
+def _status_text():
+    now = time.time()
+    up = int((now - _session_t0) / 60)
+    if running:
+        state = "실행 중"
+    elif retry_at is not None:
+        state = f"오류 후 재시작 대기 ({max(0, int(retry_at - now))}초 남음)"
+    else:
+        state = "정지됨 (F8 대기 중)"
+    return (f"📊 현황: 가동 {up // 60}시간 {up % 60}분 · "
+            f"누적 {_rounds_done}판 완료 · 상태: {state}")
+
+
+def _reply_status():
+    """'현황' 요청에 즉시 답장 — 쿨다운/오류잠금과 무관하게 항상 보냄."""
+    label = f"[{NOTIFY_NAME}] {_status_text()}"
+    try:
+        shot = _capture_screen_jpeg() if SEND_SCREENSHOT else None
+        if shot is not None:
+            _send_telegram_photo(label, shot)
+        else:
+            _send_telegram(label)
+        print("  (텔레그램 '현황' 요청에 답장 보냄)")
+    except Exception as e:
+        print(f"  (텔레그램 답장 실패: {e})")
+
+
+def _tg_command_loop():
+    """텔레그램에 '현황' 이 오면 상태+스크린샷을 답장하는 백그라운드 루프."""
+    global _tg_seen_update
+    import json
+    base = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset=-1&timeout=0"
+    try:        # 시작 시점에 이미 쌓여있던 옛 메시지엔 답장하지 않도록 기준점 잡기
+        resp = _tg_urlopen(base, timeout=15)
+        for upd in json.loads(resp.read().decode()).get("result", []):
+            _tg_seen_update = upd.get("update_id")
+    except Exception:
+        pass
+    if _tg_seen_update is None:
+        _tg_seen_update = 0
+
+    while alive:
+        time.sleep(TG_POLL_SEC)
+        try:
+            resp = _tg_urlopen(base, timeout=15)
+            for upd in json.loads(resp.read().decode()).get("result", []):
+                uid = upd.get("update_id", 0)
+                if uid <= _tg_seen_update:
+                    continue
+                _tg_seen_update = uid
+                msg = upd.get("message") or {}
+                if str((msg.get("chat") or {}).get("id", "")) != str(TELEGRAM_CHAT_ID):
+                    continue
+                if time.time() - msg.get("date", 0) > 300:   # 5분 넘은 옛 메시지 무시
+                    continue
+                text = (msg.get("text") or "").strip()
+                if not text.startswith("현황"):
+                    continue
+                want = text[2:].strip()      # '현황 규남' → 이름에 '규남' 든 컴퓨터만
+                if want and want not in NOTIFY_NAME:
+                    continue
+                _reply_status()
+        except Exception:
+            pass        # 인터넷이 잠깐 끊겨도 조용히 넘어가고 다음 주기에 재시도
+
+
 # ---------------------------------------------------------------- 메인 루프
 
 def stop_with_retry(reason):
@@ -1086,21 +1271,20 @@ def stop_with_retry(reason):
         retry_at = time.time() + RETRY_SEC
         print(f"[정지] {reason} — {RETRY_SEC}초 뒤 자동 재시작 (즉시 재개 F8, 종료 F9)")
         notify(f"⚠ 멈춤: {msg}\n({RETRY_SEC}초 뒤 자동 재시작을 시도합니다){tally}",
-               key=reason, photo=True)
+               key=reason, photo=True, err=True)
     else:
         print(f"[정지] {reason}")
-        notify(f"⚠ 멈춤: {msg}{tally}", key=reason, photo=True)
+        notify(f"⚠ 멈춤: {msg}{tally}", key=reason, photo=True, err=True)
 
 
 def checkup(sct):
     """오류가 났을 때 스스로 상태를 점검하고, 고칠 수 있는 건 그 자리에서 고침.
 
     점검 순서:
-      1. 혹시 마우스 버튼을 누른 채면 뗌
-      2. 창 위치 재보정 (창이 밀렸을 수 있음)
-      3. 음식만들기 창이 닫혔으면 다시 열기 (직업 → 직업활동)
-      4. 가방(아이템) 창이 안 보이면 열기
-      5. 인벤토리 스캔 캐시를 비워서 다음 시도 땐 무조건 새로 스캔
+      1. 혹시 마우스 버튼/온도 키를 누른 채면 뗌
+      2. 식장이 창이 아직 떠 있으면(요리 진행 중) 끝날 때까지 기다림
+      3. 제작 창이 닫혔으면 다시 열기 (직업 → 직업활동)
+      4. 인벤토리 스캔 캐시를 비워서 다음 시도 땐 무조건 새로 스캔
     """
     global _scan_cache
     print("  [자가점검] 상태 확인 중...")
@@ -1108,14 +1292,19 @@ def checkup(sct):
         pyautogui.mouseUp()
     except Exception:
         pass
-    recalibrate("all")
+    release_keys()
     ok = True
-    if not window_open(sct):
-        print("  [자가점검] 음식만들기 창이 닫혀있음 → 다시 열기")
+    if window_open(sct):
+        print("  [자가점검] 식장이 창이 아직 떠 있음 → 요리가 끝날 때까지 대기")
+        t0 = time.time()
+        while running and alive and window_open(sct) and time.time() - t0 < COOK_TIMEOUT:
+            time.sleep(0.5)
+        if window_open(sct):
+            print("  [자가점검] 식장이 창이 안 닫힘")
+            ok = False
+    if not craft_open(sct):
+        print("  [자가점검] 제작 창이 닫혀있음 → 다시 열기")
         ok = reopen_window(sct) and ok
-    if not bag_open():
-        print("  [자가점검] 가방(아이템) 창이 안 보임 → 열기")
-        ok = open_bag() and ok
     _scan_cache = None
     print("  [자가점검] 완료 — 곧바로 재시도" if ok else "  [자가점검] 일부 복구 실패")
     return ok
@@ -1141,36 +1330,38 @@ def step_failed(sct, reason):
 
 
 def run_round(sct, templates):
-    """한 판 진행: 창/가방 확인 → 재료 넣기 → 요리.
+    """한 판 진행: 제작 창 확인 → 재료 넣기 → 요리.
 
     어느 단계든 실패하면 step_failed가 자가점검 후 즉시 재시도하고,
     연속 실패가 쌓이면 그때만 RETRY_SEC 대기 후 자동 재시작으로 넘어감.
     """
     global running, _fail_streak, _rounds_done
 
-    if CELL1_CENTER == (0, 0) or SLOT1_CENTER == (0, 0):
-        print("[설정 필요] CELL1_CENTER / SLOT1_CENTER 좌표를 측정해서 넣어주세요.")
+    unset = [n for n, v in (("CELL1_CENTER", CELL1_CENTER), ("SLOT1_CENTER", SLOT1_CENTER),
+                            ("START_BTN", START_BTN), ("COOK_BG_POINT", COOK_BG_POINT),
+                            ("JOB_ACT_BTN", JOB_ACT_BTN))
+             if v == (0, 0)]
+    unset += [n for n, v in (("PITCH_X", PITCH_X), ("PITCH_Y", PITCH_Y),
+                             ("SLOT_PITCH_X", SLOT_PITCH_X), ("GAUGE_LEFT", GAUGE_LEFT),
+                             ("GAUGE_TOP", GAUGE_TOP), ("GAUGE_WIDTH", GAUGE_WIDTH),
+                             ("GAUGE_HEIGHT", GAUGE_HEIGHT))
+              if not v]
+    if unset or not RECIPE:
+        if unset:
+            print(f"[설정 필요] 아직 측정 안 한 좌표: {', '.join(unset)}")
+            print("            measure.py 로 재서 auto_cook.py 위쪽에 넣어주세요.")
+        if not RECIPE:
+            print("[설정 필요] RECIPE(레시피)가 비어 있음 — 넣을 재료를 적어주세요.")
         running = False   # 설정 문제는 재시도해도 소용없음 → 자동 재시작 안 함
         return
 
-    # 창을 옮겼어도 따라가도록 현재 창 위치로 좌표 보정
-    recalibrate("all")
-
-    # 요리창이 닫혀있으면 (직업 → 직업활동으로) 다시 열기
-    if not window_open(sct):
-        print("음식만들기 창이 닫혀있음 → 다시 열기")
+    # 제작 창이 닫혀있으면 (직업 → 직업활동으로) 다시 열기
+    if not craft_open(sct):
+        print("제작 창이 닫혀있음 → 다시 열기")
         if not reopen_window(sct):
-            step_failed(sct, "음식만들기 창을 열지 못함")
+            step_failed(sct, "제작 창을 열지 못함")
             return
 
-    # 가방(아이템) 창이 안 보이면 자동으로 한 번 열기 (닫혀있으면 재료 인식 불가)
-    if not open_bag():
-        step_failed(sct, "가방(아이템) 창을 열지 못함")
-        return
-
-    # 재료 넣기 직전, 인벤토리/요리창 위치 다시 보정
-    recalibrate("cook")
-    recalibrate("item")
     if not fill_slots(sct, templates):
         step_failed(sct, "재료 넣기 실패")
         return
@@ -1180,6 +1371,7 @@ def run_round(sct, templates):
 
     _fail_streak = 0   # 한 판 성공 → 연속 실패 카운트 리셋
     _rounds_done += 1
+    clear_err_notified()   # 정상 복구됨 → 다음 오류 땐 다시 알림
     print(f"★ 한 판 완료! (누적 {_rounds_done}판)")
     if not LOOP:
         running = False
@@ -1206,11 +1398,7 @@ def worker():
             missing = recipe_names - templates.keys()
             if missing:
                 print(f"[주의] RECIPE에 있지만 아이콘이 없는 재료: {', '.join(missing)}")
-        if WINDOW_FOLLOW:
-            print("창 자동 추적 ON — 게임 창(음식만들기/아이템/직업)을 옮겨도 따라감")
-        else:
-            print("창 자동 추적 OFF — 창을 측정한 자리에 고정해야 함 "
-                  "(pygetwindow 설치 시 자동 ON)")
+        print("창은 측정한 자리에 고정해야 함 (py arrange_windows.py 로 제자리 정렬)")
 
         with mss.mss() as sct:
             while alive:
@@ -1261,6 +1449,7 @@ def toggle():
     retry_at = None      # 사용자가 직접 F8을 누르면 예약된 자동 재시작은 취소
     _fail_streak = 0
     _scan_cache = None   # 사용자가 손댔을 수 있으니 다음 판은 새로 스캔
+    clear_err_notified() # 사용자가 직접 손봤으니 다음 오류는 다시 알림
     running = not running
     print("\n▶ 시작됨" if running else "\n⏸ 정지됨")
 
@@ -1279,6 +1468,10 @@ def main():
     print(" 비상시: 마우스를 화면 왼쪽 위 구석으로!")
     print("=" * 48)
     keyboard.add_hotkey("f8", toggle)
+    if TG_COMMANDS and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        threading.Thread(target=_tg_command_loop, daemon=True).start()
+        print(" 폰 텔레그램에 '현황' 이라고 보내면 스샷을 보내드립니다")
+        print(" (특정 컴퓨터만 부르려면 '현황 규남' 처럼 이름 일부를 붙이세요)")
     keyboard.add_hotkey("f9", quit_all)
     t = threading.Thread(target=worker, daemon=True)
     t.start()
