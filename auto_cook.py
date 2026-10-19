@@ -602,42 +602,81 @@ _start_rgb = np.array(START_RGB, dtype=int)
 
 
 _cook_title_seen = False   # 식장이 창을 제목으로 한 번이라도 찾았는지
+_cook_bg_mode = False      # 제목으로는 끝내 못 찾아서 배경색 방식으로 바꿨는지
 
 
-def cook_window_state():
-    """제목이 COOK_TITLE 인 창이 떠 있는지. True/False, 확인 불가면 None.
-
-    띄어쓰기 차이는 무시함 (arrange_windows.py 와 같은 방식).
-    """
+def cook_windows():
+    """제목이 COOK_TITLE 인 창 목록 (띄어쓰기 무시). 확인 불가면 None."""
     if _gw is None:
         return None
     want = "".join(COOK_TITLE.split())
     try:
-        for w in _gw.getAllWindows():
-            if "".join(str(w.title).split()) == want and w.width > 0 and w.visible:
-                return True
-        return False
+        return [w for w in _gw.getAllWindows() if "".join(str(w.title).split()) == want]
     except Exception:
         return None
+
+
+def _really_shown(w):
+    """창이 실제로 화면에 보이는 상태인지.
+
+    게임이 창을 닫을 때 없애지 않고 숨기거나, 최소화하거나, 화면 밖
+    (-32000 같은 좌표)으로 치워두는 경우가 있어서 그런 건 '닫힘'으로 봄.
+    """
+    try:
+        if not (w.visible and w.width > 0 and w.height > 0):
+            return False
+        if getattr(w, "isMinimized", False):
+            return False
+        return w.left > -10000 and w.top > -10000
+    except Exception:
+        return False
+
+
+def cook_window_state():
+    """식장이 창이 화면에 떠 있는지. True/False, 확인 불가면 None."""
+    ws = cook_windows()
+    if ws is None:
+        return None
+    return any(_really_shown(w) for w in ws)
+
+
+def describe_cook_windows():
+    """진단용 — '식장이' 제목 창들의 상태를 한 줄씩 출력."""
+    ws = cook_windows()
+    if not ws:
+        print("    (제목이 '식장이'인 창: 없음)")
+        return
+    for w in ws:
+        try:
+            print(f"    창 '{w.title}' 위치({w.left},{w.top}) 크기({w.width}x{w.height}) "
+                  f"보임={w.visible} 최소화={getattr(w, 'isMinimized', '?')} "
+                  f"→ {'열림' if _really_shown(w) else '닫힘'}으로 판단")
+        except Exception as e:
+            print(f"    창 정보 읽기 실패: {e}")
 
 
 def window_open(sct):
     """식장이 창(온도계 창)이 열려있는지.
 
-    1순위: 윈도우에 '식장이' 제목의 창이 떠 있는지 직접 물어봄 — 화면 색과
-           상관없이 창이 꺼졌는지/켜졌는지를 정확히 앎.
-    2순위: 제목으로 한 번도 못 찾았으면(pygetwindow 없음 / 제목이 다름)
-           예전 방식대로 COOK_BG_POINT 의 진초록 배경이 보이는지로 판단.
+    기본: 윈도우에 '식장이' 제목의 창이 떠 있는지 직접 물어봄 — 화면 색과
+          상관없이 창이 꺼졌는지/켜졌는지를 정확히 앎. 프로그램을 막 켰을 때도
+          이 방식을 믿음 (배경색으로 보면 그 자리에 우연히 같은 초록이 있을 때
+          '창이 떠 있다'고 잘못 판단해서 멈춰버림).
+    예외: pygetwindow 가 없거나, 시작을 눌렀는데도 제목으로 끝내 못 찾은 경우
+          (제목이 다를 때)에만 COOK_BG_POINT 의 진초록 배경으로 판단.
     """
     global _cook_title_seen
     v = cook_window_state()
-    if v is True:
-        if not _cook_title_seen:
-            print("  (식장이 창을 제목으로 찾음 — 이제 창이 꺼졌는지/켜졌는지로 판단)")
+    if v is None or _cook_bg_mode:
+        return bg_visible(sct)
+    if v and not _cook_title_seen:
+        print("  (식장이 창을 제목으로 찾음 — 창이 꺼졌는지/켜졌는지로 판단)")
         _cook_title_seen = True
-        return True
-    if v is False and _cook_title_seen:
-        return False
+    return v
+
+
+def bg_visible(sct):
+    """COOK_BG_POINT 주변(5x5)이 식장이 창의 진초록 배경색인지 (예비 방식)."""
     x, y = COOK_BG_POINT
     img = np.asarray(sct.grab({"left": x - 2, "top": y - 2, "width": 5, "height": 5}),
                      dtype=int)[:, :, :3][:, :, ::-1]
@@ -951,10 +990,18 @@ def cook_one_round(sct):
 
     # 시작을 누르면 식장이 창(온도계)이 새로 뜸 — 뜰 때까지 기다림
     t0 = time.time()
+    global _cook_bg_mode
     while running and alive and not window_open(sct):
         if time.time() - t0 > COOK_OPEN_WAIT:
+            if not _cook_title_seen and not _cook_bg_mode and bg_visible(sct):
+                # 창은 떴는데(배경색 보임) 제목으로 못 찾음 = 제목이 다른 것
+                print(f"  ('{COOK_TITLE}' 제목의 창을 못 찾음 — 배경색 방식으로 전환)")
+                describe_cook_windows()
+                _cook_bg_mode = True
+                break
             print(f"[문제] 시작을 눌렀는데 {COOK_OPEN_WAIT}초 동안 식장이 창이 안 뜸"
-                  f" — START_BTN / COOK_BG_POINT 좌표 확인")
+                  f" — START_BTN 좌표 확인")
+            describe_cook_windows()
             return False
         time.sleep(0.1)
     if not (running and alive):
@@ -1326,7 +1373,9 @@ def checkup(sct):
     release_keys()
     ok = True
     if window_open(sct):
-        print("  [자가점검] 식장이 창이 아직 떠 있음 → 요리가 끝날 때까지 대기")
+        print("  [자가점검] 식장이 창이 아직 떠 있음 → 요리가 끝날 때까지 대기"
+              f" ({'배경색 ' + str(COOK_BG_POINT) if _cook_bg_mode else '창 제목'} 기준)")
+        describe_cook_windows()
         t0 = time.time()
         while running and alive and window_open(sct) and time.time() - t0 < COOK_TIMEOUT:
             time.sleep(0.5)
