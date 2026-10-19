@@ -45,6 +45,7 @@ GAUGE_HEIGHT = 130      # 관 맨 위 75 ~ 맨 아래 205
 # 식장이 창이 열려있는지 확인할 점 — 창 안의 진초록 빈 배경 아무 데나 한 점
 # (온도계 왼쪽 아래나 오른쪽 위 빈 곳. 요리 중에도 절대 안 가려지는 곳으로)
 COOK_BG_POINT = (3145, 244)     # 측정값
+COOK_TITLE    = "식장이"        # 식장이 창의 윈도우 제목 — 이 창이 떠 있는지로 열림/닫힘 판단
 COOK_BG_RGB   = (23, 59, 21)    # 그 점의 색 (measure.py 측정값)
 
 # 온도 조절 키 (꾹 누름). 게임 업데이트로 +/- 버튼 대신 키보드로 가능해짐.
@@ -600,13 +601,43 @@ _cook_bg = np.array(COOK_BG_RGB, dtype=int)
 _start_rgb = np.array(START_RGB, dtype=int)
 
 
-def window_open(sct):
-    """식장이 창(온도계 창)이 열려있는지 — COOK_BG_POINT 의 진초록 배경이 보이는지로 판단.
+_cook_title_seen = False   # 식장이 창을 제목으로 한 번이라도 찾았는지
 
-    온도계 관 자체를 보면 요리 중엔 수은(빨강/노랑)이 채우고 있어서 배경이
-    안 보이는 게 정상이라 오판하게 됨. 그래서 요리 중에도 절대 안 가려지는
-    빈 배경 한 점(주변 5x5)만 확인함 — 창이 실제로 닫힐 때만 사라짐.
+
+def cook_window_state():
+    """제목이 COOK_TITLE 인 창이 떠 있는지. True/False, 확인 불가면 None.
+
+    띄어쓰기 차이는 무시함 (arrange_windows.py 와 같은 방식).
     """
+    if _gw is None:
+        return None
+    want = "".join(COOK_TITLE.split())
+    try:
+        for w in _gw.getAllWindows():
+            if "".join(str(w.title).split()) == want and w.width > 0 and w.visible:
+                return True
+        return False
+    except Exception:
+        return None
+
+
+def window_open(sct):
+    """식장이 창(온도계 창)이 열려있는지.
+
+    1순위: 윈도우에 '식장이' 제목의 창이 떠 있는지 직접 물어봄 — 화면 색과
+           상관없이 창이 꺼졌는지/켜졌는지를 정확히 앎.
+    2순위: 제목으로 한 번도 못 찾았으면(pygetwindow 없음 / 제목이 다름)
+           예전 방식대로 COOK_BG_POINT 의 진초록 배경이 보이는지로 판단.
+    """
+    global _cook_title_seen
+    v = cook_window_state()
+    if v is True:
+        if not _cook_title_seen:
+            print("  (식장이 창을 제목으로 찾음 — 이제 창이 꺼졌는지/켜졌는지로 판단)")
+        _cook_title_seen = True
+        return True
+    if v is False and _cook_title_seen:
+        return False
     x, y = COOK_BG_POINT
     img = np.asarray(sct.grab({"left": x - 2, "top": y - 2, "width": 5, "height": 5}),
                      dtype=int)[:, :, :3][:, :, ::-1]
