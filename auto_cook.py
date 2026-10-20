@@ -91,6 +91,8 @@ VEL_WINDOW   = 0.22     # 속도를 이 초 구간의 위치 변화로 계산 (�
 SAMPLE_DT  = 0.03
 DONE_NONE_SEC = 1.2     # 창이 닫힌 채 수은이 이만큼 안 보이면 요리 끝으로 판단
 MIN_ROUND_SEC = 6.0     # 시작 후 이 시간 전엔 '요리 끝'으로 판단 안 함 (오검출 방지)
+STUCK_MOVE   = 0.02     # 끝까지(HOLD_MAX) 눌렀는데 온도계가 이것보다 덜 움직이면 '반응 없음'
+STUCK_HOLDS  = 2        # '반응 없음'이 이만큼 연속이면 창이 이미 닫힌 걸로 보고 요리 끝 처리
 NO_MERCURY_SEC = 15     # 시작 클릭 후 이 시간 동안 수은이 한 번도 안 보이면
                         # 시작 자체가 실패한 것(슬롯 비었음 등)으로 보고 일찍 접음
 
@@ -290,6 +292,7 @@ def hold_toward(sct, key, sign, label):
     t0 = time.time()
     next_repeat = t0 + KEY_REPEAT_DELAY
     hist = []
+    seen_pos = []          # 누르는 동안 본 위치들 — 온도계가 실제로 움직였는지 확인용
     try:
         while running and alive:
             el = time.time() - t0
@@ -298,6 +301,7 @@ def hold_toward(sct, key, sign, label):
             pos = read_pos(sct)
             now = time.time()
             if pos is not None:
+                seen_pos.append(pos)
                 hist.append((now, pos))
                 hist[:] = [(t, p) for (t, p) in hist if now - t <= VEL_WINDOW]
                 v = (pos - hist[0][1]) / max(now - hist[0][0], 1e-3) if len(hist) >= 2 else 0.0
@@ -313,8 +317,11 @@ def hold_toward(sct, key, sign, label):
             time.sleep(SAMPLE_DT)
     finally:
         keyboard.release(key)
-    print(f"  {label} {time.time()-t0:.2f}초 꾹 누름", " " * 18)
+    held = time.time() - t0
+    print(f"  {label} {held:.2f}초 꾹 누름", " " * 18)
     time.sleep(random.uniform(*HOLD_GAP))
+    moved = (max(seen_pos) - min(seen_pos)) if seen_pos else 0.0
+    return held, moved
 
 
 def release_keys():
@@ -603,6 +610,7 @@ _start_rgb = np.array(START_RGB, dtype=int)
 
 _cook_title_seen = False   # 식장이 창을 제목으로 한 번이라도 찾았는지
 _cook_bg_mode = False      # 제목으로는 끝내 못 찾아서 배경색 방식으로 바꿨는지
+_cook_ignore = set()       # 시작 누르기 전부터 떠 있던 '식장이' 창(유령 창) — 판단에서 제외
 
 
 def cook_windows():
@@ -611,9 +619,30 @@ def cook_windows():
         return None
     want = "".join(COOK_TITLE.split())
     try:
-        return [w for w in _gw.getAllWindows() if "".join(str(w.title).split()) == want]
+        return [w for w in _gw.getAllWindows()
+                if "".join(str(w.title).split()) == want and _win_key(w) not in _cook_ignore]
     except Exception:
         return None
+
+
+def _win_key(w):
+    """창 하나를 구별하는 번호 (윈도우 핸들). 못 얻으면 None."""
+    return getattr(w, "_hWnd", None)
+
+
+def ignore_stale_cook_windows():
+    """시작 누르기 직전에 호출 — 이 시점에 이미 '떠 있는' 식장이 창은 요리 창이 아님.
+
+    게임이 닫은 창을 완전히 없애지 않고 남겨두는 경우(유령 창)가 있어서,
+    그런 창 때문에 요리가 끝나도 '아직 떠 있다'고 잘못 판단하는 걸 막음.
+    """
+    global _cook_ignore
+    _cook_ignore = set()
+    ws = cook_windows() or []
+    stale = {_win_key(w) for w in ws if _really_shown(w) and _win_key(w) is not None}
+    if stale:
+        print(f"  (시작 전부터 떠 있는 '{COOK_TITLE}' 창 {len(stale)}개는 예전 창으로 보고 무시)")
+    _cook_ignore = stale
 
 
 def _really_shown(w):
@@ -985,6 +1014,7 @@ def cook_one_round(sct):
       '요리 끝'은 수은이 안 보이는 것만으로 판단하지 않고, 식장이 창이 실제로
       닫혔는지(초록 배경 사라짐)로 판단해 오검출을 막음.
     """
+    ignore_stale_cook_windows()
     print("시작 버튼 클릭!")
     human_click(START_BTN, jx=12, jy=4)
 
@@ -1025,15 +1055,17 @@ def cook_one_round(sct):
     last_dir = None        # 직전에 누른 방향 '+'/'-' — 연속 같은방향 누름 방지
     last_press = 0.0       # 직전에 누른 시각
     history = []           # (시각, 위치) — 속도 계산용
+    stuck = 0              # 끝까지 꾹 눌렀는데 온도계가 꿈쩍 안 한 횟수 (연속)
 
     def do_hold(sign):
-        nonlocal last_dir, last_press
+        nonlocal last_dir, last_press, stuck
         if sign > 0:
-            hold_toward(sct, PLUS_KEY, +1, "+"); last_dir = "+"
+            held, moved = hold_toward(sct, PLUS_KEY, +1, "+"); last_dir = "+"
         else:
-            hold_toward(sct, MINUS_KEY, -1, "-"); last_dir = "-"
+            held, moved = hold_toward(sct, MINUS_KEY, -1, "-"); last_dir = "-"
         last_press = time.time()
         history.clear()    # 누른 뒤엔 속도 이력 리셋
+        stuck = stuck + 1 if (held >= HOLD_MAX - 0.2 and moved < STUCK_MOVE) else 0
 
     while running and alive:
         now = time.time()
@@ -1101,6 +1133,14 @@ def cook_one_round(sct):
 
         print(f"pos {pos:.2f} → {want} 꾹", " " * 12, end="\r")
         do_hold(+1 if want == "+" else -1)
+        if stuck >= STUCK_HOLDS:
+            # 끝까지 꾹 눌렀는데 온도계가 전혀 안 움직임 = 식장이 창은 이미 닫혔고
+            # 그 자리 배경을 수은으로 잘못 읽고 있는 것 → 요리 끝으로 처리
+            print(f"\n요리 끝으로 판단 — {STUCK_HOLDS}번 연속 끝까지 눌러도 온도계가 꿈쩍 안 함"
+                  f" (창 닫힘 감지가 안 된 것)")
+            print(f"  [진단] 판단 방식: {'배경색 ' + str(COOK_BG_POINT) if _cook_bg_mode else '창 제목'}")
+            describe_cook_windows()
+            return True
     return False
 
 
