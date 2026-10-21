@@ -13,6 +13,13 @@ F8 한 번이면:
 이 파일 하나로 실행됨. 단, 같은 폴더에 items 폴더(아이콘 등록)가 있어야 함.
 F8 = 시작/정지, F9 = 종료. 비상시: 마우스를 화면 왼쪽 위 구석으로.
 
+■ 창 위치 자동 찾기 (새로 설치할 때 추천)
+   py measure_cook.py 로 한 번 재면 cook_layout.json 이 생김. 그 파일이 있으면
+   아래 좌표 대신 직업/제작/식장이 창을 '제목'으로 찾아서 창 안의 위치로 계산함
+   → 창을 어디로 옮겨도, 화면 배율이 다른 컴퓨터여도 다시 잴 필요 없음
+   (재료 아이콘 캡처:  py auto_cook.py 캡처)
+   cook_layout.json 이 없으면 예전처럼 아래 좌표를 그대로 씀.
+
 ※ 게임 업데이트(창 구조 변경) 후 버전:
    - 아이템 창은 이제 필요 없음 (제작 창 안에 인벤토리가 있음)
    - 온도 +/- 는 마우스 대신 키보드 ',' '.' 를 꾹 누름
@@ -21,6 +28,8 @@ F8 = 시작/정지, F9 = 종료. 비상시: 마우스를 화면 왼쪽 위 구�
 
 import os
 import re
+import sys
+import json
 import time
 import random
 import threading
@@ -153,6 +162,12 @@ JOB_BTN     = None           # (JOB_KEY 를 쓰면 필요 없음) 아래 메뉴�
 JOB_ACT_BTN = (2277, 373)    # 직업 창의 "직업활동" 버튼
 REOPEN_WAIT = 8         # 창 열림 최대 대기(초)
 COOK_OPEN_WAIT = 6      # 시작 누른 뒤 식장이 창이 뜰 때까지 최대 대기(초)
+
+# ----- 창 위치 자동 찾기 -----
+# measure_cook.py 로 만든 cook_layout.json 이 있으면 위 좌표 대신 창을 제목으로
+# 찾아 "창 왼쪽 위 + 창 크기의 몇 %" 로 계산함 (창 이동/화면 배율 상관없음).
+LAYOUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cook_layout.json")
+REF_CELL_PITCH = 42.0   # GAUGE_WIDTH(20)를 정한 화면의 인벤토리 칸 간격 — 배율 계산 기준
 MATCH_THRESHOLD = 50    # 기본 인식 기준 (차이값) — 실사용 결과 50이 잘 맞음. 오인식하면 낮추기
 # 재료별로 다른 기준이 필요하면 여기에 추가 (예: {"버섯": 45})
 MATCH_THRESHOLDS = {}
@@ -613,6 +628,90 @@ _cook_bg_mode = False      # 제목으로는 끝내 못 찾아서 배경색 방�
 _cook_ignore = set()       # 시작 누르기 전부터 떠 있던 '식장이' 창(유령 창) — 판단에서 제외
 
 
+_layout = None             # cook_layout.json 내용 (없으면 None = 고정 좌표 방식)
+
+
+def load_layout():
+    """cook_layout.json 을 읽음. 없거나 깨졌으면 None (고정 좌표 방식으로 동작)."""
+    global _layout, COOK_TITLE
+    _layout = None
+    if not os.path.exists(LAYOUT_FILE):
+        return None
+    try:
+        with open(LAYOUT_FILE, encoding="utf-8") as f:
+            _layout = json.load(f)
+        COOK_TITLE = _layout["titles"]["cook"]
+    except Exception as e:
+        print(f"[주의] {LAYOUT_FILE} 을 읽지 못함 ({e}) — 고정 좌표로 동작")
+        _layout = None
+    return _layout
+
+
+def find_win(kind):
+    """layout 에 적힌 제목(kind = job/craft/cook)의 '떠 있는' 창 하나. 없으면 None."""
+    if _gw is None or _layout is None:
+        return None
+    want = "".join(_layout["titles"][kind].split())
+    try:
+        for w in _gw.getAllWindows():
+            if ("".join(str(w.title).split()) == want and _really_shown(w)
+                    and (kind != "cook" or _win_key(w) not in _cook_ignore)):
+                return w
+    except Exception:
+        pass
+    return None
+
+
+def layout_point(name, w):
+    """측정해둔 지점(name)의 지금 화면 좌표 — 창 위치 + 창 크기 x 비율."""
+    pt = _layout["points"][name]
+    return (w.left + pt["fx"] * w.width, w.top + pt["fy"] * w.height)
+
+
+def _ipt(xy):
+    return (int(round(xy[0])), int(round(xy[1])))
+
+
+def apply_craft_layout():
+    """제작 창 위치로 슬롯/시작버튼/인벤토리 좌표를 계산. 제작 창이 없으면 False."""
+    global SLOT1_CENTER, SLOT_PITCH_X, START_BTN, CELL1_CENTER, PITCH_X, PITCH_Y
+    w = find_win("craft")
+    if w is None:
+        return False
+    s1, s2 = layout_point("slot1", w), layout_point("slot2", w)
+    SLOT1_CENTER, SLOT_PITCH_X = _ipt(s1), s2[0] - s1[0]
+    START_BTN = _ipt(layout_point("start", w))
+    c1 = layout_point("cell_first", w)
+    cr = layout_point("cell_row1_last", w)
+    cd = layout_point("cell_row5_first", w)
+    CELL1_CENTER = _ipt(c1)
+    PITCH_X = (cr[0] - c1[0]) / (COLS - 1)
+    PITCH_Y = (cd[1] - c1[1]) / (ROWS - 1)
+    return True
+
+
+def apply_job_layout():
+    """직업 창 위치로 직업활동 버튼 좌표를 계산. 직업 창이 없으면 False."""
+    global JOB_ACT_BTN
+    w = find_win("job")
+    if w is None:
+        return False
+    JOB_ACT_BTN = _ipt(layout_point("job_act", w))
+    return True
+
+
+def apply_cook_layout(w):
+    """식장이 창 위치로 온도계 좌표를 계산 (관 폭은 화면 배율에 맞춰 키움)."""
+    global GAUGE_LEFT, GAUGE_TOP, GAUGE_WIDTH, GAUGE_HEIGHT, COOK_BG_POINT
+    top, bot = layout_point("gauge_top", w), layout_point("gauge_bottom", w)
+    k = (PITCH_X / REF_CELL_PITCH) if PITCH_X else 1.0
+    GAUGE_WIDTH = max(10, int(round(20 * k)))
+    GAUGE_LEFT = int(round((top[0] + bot[0]) / 2 - GAUGE_WIDTH / 2))
+    GAUGE_TOP = int(round(top[1]))
+    GAUGE_HEIGHT = max(10, int(round(bot[1] - top[1])))
+    COOK_BG_POINT = _ipt(layout_point("cook_bg", w))
+
+
 def cook_windows():
     """제목이 COOK_TITLE 인 창 목록 (띄어쓰기 무시). 확인 불가면 None."""
     if _gw is None:
@@ -696,6 +795,8 @@ def window_open(sct):
     """
     global _cook_title_seen
     v = cook_window_state()
+    if _layout is not None:
+        return bool(v)            # 창 위치 파일 방식: 창 제목만 믿음
     if v is None or _cook_bg_mode:
         return bg_visible(sct)
     if v and not _cook_title_seen:
@@ -718,7 +819,10 @@ def craft_open(sct):
 
     버튼 위에 마우스가 올라가 있으면 색이 살짝 바뀔 수 있어서, 버튼 가로로
     세 군데(왼쪽/가운데/오른쪽)를 보고 하나라도 초록이면 열림으로 봄.
+    창 위치 파일 방식이면 '제작' 창이 떠 있는지로 보고, 좌표도 그 창 기준으로 갱신.
     """
+    if _layout is not None:
+        return apply_craft_layout()
     x, y = START_BTN
     for dx in (-25, 0, 25):
         img = np.asarray(sct.grab({"left": x + dx - 2, "top": y - 2, "width": 5, "height": 5}),
@@ -735,7 +839,7 @@ def open_job_window():
     클릭 → 창 제목("직업")으로 열림 확인 → 안 열렸으면 다시 클릭 (최대 3번).
     이미 열려있으면 다시 안 누름 (토글로 닫혀버리는 것 방지).
     """
-    if win_visible("직업") is True:
+    if (find_win("job") is not None) if _layout is not None else (win_visible("직업") is True):
         print("직업 창 이미 열려있음")
         return True
     if JOB_KEY is None and JOB_BTN is None:
@@ -758,7 +862,7 @@ def open_job_window():
         press_job()
         t0 = time.time()
         while running and alive and time.time() - t0 < 4:
-            if win_visible("직업") is True:
+            if (find_win("job") is not None) if _layout is not None else (win_visible("직업") is True):
                 print("직업 창 열림 확인")
                 time.sleep(random.uniform(0.6, 1.0))
                 return True
@@ -784,6 +888,11 @@ def reopen_window(sct):
     if not open_job_window():
         return False
     for attempt in range(3):
+        if _layout is not None and not apply_job_layout():
+            print("  직업 창을 못 찾음 → 다시 열기")
+            if not open_job_window():
+                return False
+            continue
         direct_click(JOB_ACT_BTN, "직업활동")
         t0 = time.time()
         while running and alive and time.time() - t0 < REOPEN_WAIT:
@@ -1023,7 +1132,8 @@ def cook_one_round(sct):
     global _cook_bg_mode
     while running and alive and not window_open(sct):
         if time.time() - t0 > COOK_OPEN_WAIT:
-            if not _cook_title_seen and not _cook_bg_mode and bg_visible(sct):
+            if (_layout is None and not _cook_title_seen and not _cook_bg_mode
+                    and bg_visible(sct)):
                 # 창은 떴는데(배경색 보임) 제목으로 못 찾음 = 제목이 다른 것
                 print(f"  ('{COOK_TITLE}' 제목의 창을 못 찾음 — 배경색 방식으로 전환)")
                 describe_cook_windows()
@@ -1036,7 +1146,16 @@ def cook_one_round(sct):
         time.sleep(0.1)
     if not (running and alive):
         return False
-    print("식장이 창 열림 확인")
+    if _layout is not None:
+        w = find_win("cook")
+        if w is None:
+            print("[문제] 식장이 창이 떴다가 사라짐")
+            return False
+        apply_cook_layout(w)
+        print(f"식장이 창 열림 확인 — 온도계 ({GAUGE_LEFT}, {GAUGE_TOP}) "
+              f"폭 {GAUGE_WIDTH} 높이 {GAUGE_HEIGHT}")
+    else:
+        print("식장이 창 열림 확인")
     time.sleep(random.uniform(0.3, 0.6))
     # 마우스를 시작 버튼 위에 그대로 두지 않고 식장이 창 쪽으로 옮겨둠 (사람처럼).
     # 키가 안 먹는 컴퓨터면 COOK_FOCUS_CLICK 자리를 한 번 클릭해서 창을 활성화.
@@ -1457,11 +1576,13 @@ def run_round(sct, templates):
     """
     global running, _fail_streak, _rounds_done
 
-    unset = [n for n, v in (("CELL1_CENTER", CELL1_CENTER), ("SLOT1_CENTER", SLOT1_CENTER),
+    unset = [] if _layout is not None else [
+             n for n, v in (("CELL1_CENTER", CELL1_CENTER), ("SLOT1_CENTER", SLOT1_CENTER),
                             ("START_BTN", START_BTN), ("COOK_BG_POINT", COOK_BG_POINT),
                             ("JOB_ACT_BTN", JOB_ACT_BTN))
              if v == (0, 0)]
-    unset += [n for n, v in (("PITCH_X", PITCH_X), ("PITCH_Y", PITCH_Y),
+    unset += [] if _layout is not None else [
+              n for n, v in (("PITCH_X", PITCH_X), ("PITCH_Y", PITCH_Y),
                              ("SLOT_PITCH_X", SLOT_PITCH_X), ("GAUGE_LEFT", GAUGE_LEFT),
                              ("GAUGE_TOP", GAUGE_TOP), ("GAUGE_WIDTH", GAUGE_WIDTH),
                              ("GAUGE_HEIGHT", GAUGE_HEIGHT))
@@ -1518,7 +1639,15 @@ def worker():
             missing = recipe_names - templates.keys()
             if missing:
                 print(f"[주의] RECIPE에 있지만 아이콘이 없는 재료: {', '.join(missing)}")
-        print("창은 측정한 자리에 고정해야 함 (py arrange_windows.py 로 제자리 정렬)")
+        if load_layout() is not None:
+            print(f"창 위치 파일 사용 ({os.path.basename(LAYOUT_FILE)}) — "
+                  f"창을 제목으로 찾아서 계산함 (창을 옮겨도 됨)")
+            if _gw is None:
+                print("[주의] pygetwindow 가 없어서 창을 못 찾음 — "
+                      "py -m pip install pygetwindow")
+        else:
+            print("창은 측정한 자리에 고정해야 함 (py arrange_windows.py 로 제자리 정렬)")
+            print("  (창 위치 상관없이 쓰려면: py measure_cook.py 로 한 번 재기)")
 
         with mss.mss() as sct:
             while alive:
@@ -1581,6 +1710,38 @@ def quit_all():
     print("\n종료합니다...")
 
 
+def capture_items():
+    """제작 창 인벤토리 아이콘을 items 폴더에 저장 (capture_items.py 와 같은 결과).
+
+    cook_layout.json 으로 인벤토리 위치를 찾으므로 좌표를 따로 안 고쳐도 됨.
+    """
+    if load_layout() is None or not apply_craft_layout():
+        print("[중단] cook_layout.json 이 없거나 제작 창이 안 보임")
+        print("       (cook_layout.json 이 없으면 py measure_cook.py 부터)")
+        return
+    outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "items")
+    os.makedirs(outdir, exist_ok=True)
+    half = CELL_SIZE // 2
+    saved = 0
+    with mss.mss() as sct:
+        for r in range(ROWS):
+            for c in range(COLS):
+                cx, cy, has_item = locate_true_center(
+                    sct, CELL1_CENTER[0] + c * PITCH_X, CELL1_CENTER[1] + r * PITCH_Y)
+                if not has_item:
+                    continue                      # 빈 칸
+                cx, cy = int(round(cx)), int(round(cy))
+                shot = sct.grab({"left": cx - half, "top": cy - half,
+                                 "width": CELL_SIZE, "height": CELL_SIZE})
+                img = np.asarray(shot)[:, :, :3][:, :, ::-1]
+                Image.fromarray(img.astype("uint8")).save(
+                    os.path.join(outdir, f"cell_{r+1}_{c+1}.png"))
+                saved += 1
+    print(f"완료! {saved}개 저장 → {outdir}")
+    print("items 폴더에서 빈 칸/필요 없는 건 지우고, 나머지는 재료 이름으로 바꾸세요.")
+    print("예: cell_1_3.png → 노란꽃.png  (같은 재료 여러 장은 노란꽃1.png, 노란꽃2.png)")
+
+
 def main():
     print("=" * 48)
     print(" 음식만들기 풀 자동 봇 (재료넣기 + 시작 + 온도조절)")
@@ -1602,7 +1763,11 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        if len(sys.argv) > 1 and sys.argv[1] in ("캡처", "capture"):
+            capture_items()
+            input("\n엔터를 누르면 창이 닫힙니다...")
+        else:
+            main()
     except Exception:
         import traceback
         print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
