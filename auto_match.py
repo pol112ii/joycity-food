@@ -3,8 +3,8 @@
 가구만들기(그림 맞추기) 풀 자동 봇.
 
 F8 한 번이면:
-  직업 → 직업활동 → 가구만들기 창 열기
-  → 재료 우클릭으로 넣기 → 시작 버튼
+  직업(F2) → 직업활동 → 제작 창 열기
+  → 재료 우클릭으로 넣기 → 시작 버튼 → '주장이' 카드 창이 뜸
   → 5x5 카드 짝맞추기 (기억하면서 진행, 폭탄 밟으면 기억 초기화)
   → 창이 닫히면 한 판 완료 → 다음 판 반복
 재료가 떨어지면 멈춤.
@@ -12,7 +12,11 @@ F8 한 번이면:
 F8 = 시작/정지, F9 = 종료. 비상시: 마우스를 화면 왼쪽 위 구석으로.
 
 ■ 처음 쓰기 전에
-  1. 창 배치 후:  py arrange_windows.py 저장
+  0. 창 위치 재기: py measure_match.py   (한 번만. match_layout.json 이 생김)
+     → 그 뒤로는 창을 어디로 옮겨도, 다른 컴퓨터여도 창을 제목으로 찾아서
+       '창 안의 위치'로 계산하므로 좌표를 다시 잴 필요 없음
+     (재료 아이콘 캡처:  py auto_match.py 캡처)
+  1. 창 배치 후:  py arrange_windows.py 저장   (선택 — 이제 안 해도 됨)
   2. 인식 확인:   py match_test.py      (카드판이 제대로 읽히는지)
   3. 한 판만 시험: py match_once.py     (재료 넣고 시작 버튼 앞에서 실행)
   4. 재료 등록:   아래 RECIPE 를 이번 레시피에 맞게 고치고,
@@ -22,6 +26,8 @@ F8 = 시작/정지, F9 = 종료. 비상시: 마우스를 화면 왼쪽 위 구�
 
 import os
 import re
+import sys
+import json
 import time
 import random
 import threading
@@ -59,8 +65,19 @@ COLS = 6
 ROWS = 5
 
 # ----- 창 열기 버튼 -----
-JOB_BTN = (761, 1002)        # 아래 메뉴바의 "직업" 아이콘
+JOB_BTN = (761, 1002)        # 아래 메뉴바의 "직업" 아이콘 (JOB_KEY 를 쓰면 안 씀)
 JOB_ACT_BTN = (1132, 304)    # 직업 창의 "직업활동" 버튼
+JOB_KEY = "f2"               # 직업 창 여는 키 (게임 업데이트로 F2). None 이면 JOB_BTN 클릭
+
+# ----- 창 위치 자동 찾기 (게임 업데이트 후 방식) -----
+# measure_match.py 로 한 번 재면 match_layout.json 이 생김. 그 파일이 있으면
+# 위의 고정 좌표는 안 쓰고, 직업/제작/주장이 창을 '제목'으로 찾아서
+# "창 왼쪽 위에서 창 크기의 몇 % 지점" 으로 매번 계산함.
+#   → 창을 어디로 옮겨도 OK, 화면 배율이 다른 컴퓨터도 같은 파일 그대로 OK
+LAYOUT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "match_layout.json")
+REF_CARD_PITCH = 45.0        # 아래 RING_IN 등 카드 크기 값들을 정한 화면의 카드 간격.
+                             # 배율이 큰 컴퓨터면 카드 간격에 비례해서 자동으로 키움
+CARD_OPEN_WAIT = 6           # 시작 누른 뒤 주장이 창이 뜰 때까지 최대 대기(초)
 
 # ==================== 레시피 (판마다 바뀌면 여기만 고치면 됨) ====================
 # ("재료이름", 개수) 형태. 재료이름은 items 폴더의 png 파일명과 같아야 함.
@@ -302,8 +319,13 @@ def right_click_item(pos):
 
 def park_mouse():
     """스캔 전에 마우스를 인벤토리 밖으로 치움 (커서가 아이콘 덮는 것 방지)."""
-    px = int(CELL1_CENTER[0])
-    py = int(CELL1_CENTER[1] + ROWS * PITCH_Y + 55)
+    if _layout is not None:
+        # 제작 창: 인벤토리 첫 줄 바로 위 '재료 n/3' 글자 줄 (빈 곳)
+        px = int(CELL1_CENTER[0] + 2.5 * PITCH_X)
+        py = int(CELL1_CENTER[1] - 0.8 * PITCH_Y)
+    else:
+        px = int(CELL1_CENTER[0])
+        py = int(CELL1_CENTER[1] + ROWS * PITCH_Y + 55)
     smooth_move_to(px, py, random.uniform(0.15, 0.3), bow=8)
     time.sleep(random.uniform(0.1, 0.2))
 
@@ -314,12 +336,145 @@ def park_mouse():
 #  부분만 비교에서 빼는 방식으로 바꿨음.)
 
 
+# ==================== 창 찾기 (제목 + 창 안 비율 위치) ====================
+
+try:
+    import pygetwindow as _gw
+except Exception:
+    _gw = None
+
+_layout = None       # match_layout.json 내용 (없으면 None = 고정 좌표 방식)
+_card_win = None     # 이번 판의 주장이(카드) 창
+_BASE_SIZES = (RING_IN, RING_OUT, IMG_R, CURSOR_BOX)   # 배율 1배일 때의 크기 값
+
+
+def load_layout():
+    """match_layout.json 을 읽음. 없거나 깨졌으면 None (고정 좌표 방식으로 동작)."""
+    global _layout
+    _layout = None
+    if not os.path.exists(LAYOUT_FILE):
+        return None
+    try:
+        with open(LAYOUT_FILE, encoding="utf-8") as f:
+            _layout = json.load(f)
+    except Exception as e:
+        print(f"[주의] {LAYOUT_FILE} 을 읽지 못함 ({e}) — 고정 좌표로 동작")
+        _layout = None
+    return _layout
+
+
+def _norm(t):
+    return "".join(str(t).split())
+
+
+def _really_shown(w):
+    """창이 실제로 화면에 떠 있는지 (숨김/최소화/화면 밖으로 치운 창은 닫힘으로 봄)."""
+    try:
+        if not (w.visible and w.width > 0 and w.height > 0):
+            return False
+        if getattr(w, "isMinimized", False):
+            return False
+        return w.left > -10000 and w.top > -10000
+    except Exception:
+        return False
+
+
+def find_windows(kind, ignore=()):
+    """layout 에 적힌 제목(kind = job/craft/card)의 '떠 있는' 창 목록."""
+    if _gw is None or _layout is None:
+        return []
+    want = _norm(_layout["titles"][kind])
+    try:
+        return [w for w in _gw.getAllWindows()
+                if _norm(w.title) == want and _really_shown(w)
+                and getattr(w, "_hWnd", None) not in ignore]
+    except Exception:
+        return []
+
+
+def find_win(kind):
+    ws = find_windows(kind)
+    return ws[0] if ws else None
+
+
+def layout_point(name, w):
+    """측정해둔 지점(name)의 지금 화면 좌표 — 창 위치 + 창 크기 x 비율."""
+    pt = _layout["points"][name]
+    return (w.left + pt["fx"] * w.width, w.top + pt["fy"] * w.height)
+
+
+def _ipt(xy):
+    return (int(round(xy[0])), int(round(xy[1])))
+
+
+def apply_craft_layout():
+    """제작 창 위치로 슬롯/시작버튼/인벤토리 좌표를 계산. 창이 없으면 False."""
+    global SLOT1_CENTER, SLOT_PITCH_X, START_BTN, CELL1_CENTER, PITCH_X, PITCH_Y
+    if _layout is None:
+        return True
+    w = find_win("craft")
+    if w is None:
+        return False
+    s1, s2 = layout_point("slot1", w), layout_point("slot2", w)
+    SLOT1_CENTER, SLOT_PITCH_X = _ipt(s1), s2[0] - s1[0]
+    START_BTN = _ipt(layout_point("start", w))
+    c1 = layout_point("cell_first", w)
+    cr = layout_point("cell_row1_last", w)
+    cd = layout_point("cell_row5_first", w)
+    CELL1_CENTER = _ipt(c1)
+    PITCH_X = (cr[0] - c1[0]) / (COLS - 1)
+    PITCH_Y = (cd[1] - c1[1]) / (ROWS - 1)
+    return True
+
+
+def apply_job_layout():
+    """직업 창 위치로 직업활동 버튼 좌표를 계산. 창이 없으면 False."""
+    global JOB_ACT_BTN
+    if _layout is None:
+        return True
+    w = find_win("job")
+    if w is None:
+        return False
+    JOB_ACT_BTN = _ipt(layout_point("job_act", w))
+    return True
+
+
+def apply_card_layout(w):
+    """주장이 창 위치로 카드 좌표를 계산하고, 카드 크기에 맞춰 판정 크기도 맞춤."""
+    global CARD1_CENTER, CARD_PITCH_X, CARD_PITCH_Y
+    global RING_IN, RING_OUT, IMG_R, CURSOR_BOX
+    a = layout_point("card_r1c1", w)
+    b = layout_point("card_r1c5", w)
+    c = layout_point("card_r5c1", w)
+    CARD1_CENTER = _ipt(a)
+    CARD_PITCH_X = (b[0] - a[0]) / (GRID - 1)
+    CARD_PITCH_Y = (c[1] - a[1]) / (GRID - 1)
+    k = CARD_PITCH_X / REF_CARD_PITCH
+    ri, ro, ir, cb = _BASE_SIZES
+    RING_IN, RING_OUT, IMG_R = round(ri * k), round(ro * k), round(ir * k)
+    CURSOR_BOX = tuple(int(round(v * k)) for v in cb)
+    _build_ring()
+
+
+def craft_open(sct):
+    """제작 창(재료 넣고 시작 누르는 창)이 떠 있는지."""
+    if _layout is None:
+        return window_open(sct)      # 예전 방식: 한 창에 재료칸과 카드판이 같이 있었음
+    return find_win("craft") is not None
+
+
 # ==================== 화면 읽기 ====================
 
-_yy, _xx = np.mgrid[-RING_OUT:RING_OUT + 1, -RING_OUT:RING_OUT + 1]
-_dist = np.sqrt(_yy ** 2 + _xx ** 2)
-RING = (_dist >= RING_IN) & (_dist <= RING_OUT)
-BOARD_MARGIN = RING_OUT + 6
+def _build_ring():
+    """카드 배경 원 색을 볼 고리 모양(RING)과 판 캡처 여유(BOARD_MARGIN)를 만듦."""
+    global RING, BOARD_MARGIN
+    yy, xx = np.mgrid[-RING_OUT:RING_OUT + 1, -RING_OUT:RING_OUT + 1]
+    dist = np.sqrt(yy ** 2 + xx ** 2)
+    RING = (dist >= RING_IN) & (dist <= RING_OUT)
+    BOARD_MARGIN = RING_OUT + 6
+
+
+_build_ring()
 
 
 def card_center(r, c):
@@ -395,7 +550,13 @@ def read_board(sct):
 
 
 def window_open(sct):
-    """가구만들기 창이 열려있는지 (기준점 색이 맞는지)."""
+    """카드판 창이 열려있는지.
+
+    match_layout.json 이 있으면: 시작 누를 때 찾아둔 주장이 창이 아직 떠 있는지
+    (창 제목 방식 — 화면 색과 상관없이 정확). 없으면: 기준점 색이 맞는지.
+    """
+    if _layout is not None:
+        return _card_win is not None and _really_shown(_card_win)
     px = grab(sct, WIN_POINT[0], WIN_POINT[1], 2).reshape(-1, 3)
     return bool(np.abs(px - np.array(WIN_RGB)).sum(axis=1).min() <= WIN_TOL)
 
@@ -696,17 +857,30 @@ def match_region(region, tpl):
     return float(np.where(valid, d, np.inf).min())
 
 
+SEL_BORDER_RGB = (52, 188, 228)    # 제작 창에서 재료를 넣은 칸에 생기는 하늘색 테두리
+
+
+def grab_cell(sct, nx, ny):
+    """칸 하나를 캡처. 넣은 칸의 하늘색 테두리는 가장자리에서만 검은색으로 지움."""
+    size = CELL_SIZE + 2 * ALIGN
+    region = grab(sct, nx, ny, size // 2)[:size, :size].copy()
+    yy, xx = np.mgrid[:size, :size] - (size - 1) / 2
+    ring = np.maximum(np.abs(yy), np.abs(xx)) >= CELL_SIZE // 2 - 3
+    border = ring & np.all(np.abs(region - np.array(SEL_BORDER_RGB)) <= 45, axis=-1)
+    region[border] = 0
+    return region
+
+
 def scan_inventory(sct, templates):
     """인벤토리 전체를 스캔. {재료이름: [칸 중심좌표,...]} 와 최소차이값 반환."""
     park_mouse()
     found = {}
     min_diffs = {name: 1e9 for name in templates}
-    size = CELL_SIZE + 2 * ALIGN
     for r in range(ROWS):
         for c in range(COLS):
             nx = int(round(CELL1_CENTER[0] + c * PITCH_X))
             ny = int(round(CELL1_CENTER[1] + r * PITCH_Y))
-            region = grab(sct, nx, ny, size // 2)[:size, :size]
+            region = grab_cell(sct, nx, ny)
             center = region[ALIGN + TOP_CUT:ALIGN + CELL_SIZE, ALIGN:ALIGN + CELL_SIZE]
             if int((center.sum(axis=2) > 90).sum()) < MIN_ITEM_PX:
                 continue
@@ -730,8 +904,7 @@ def cell_still_has(sct, templates, name, pos):
     기준 안에 들어와서 엉뚱한 게 들어감. 그래서 스캔과 똑같이 '모든 재료 중
     이게 가장 잘 맞는지'까지 확인함.
     """
-    size = CELL_SIZE + 2 * ALIGN
-    region = grab(sct, int(round(pos[0])), int(round(pos[1])), size // 2)[:size, :size]
+    region = grab_cell(sct, int(round(pos[0])), int(round(pos[1])))
     center = region[ALIGN + TOP_CUT:ALIGN + CELL_SIZE, ALIGN:ALIGN + CELL_SIZE]
     if int((center.sum(axis=2) > 90).sum()) < MIN_ITEM_PX:
         return False
@@ -851,27 +1024,73 @@ def fill_slots(sct, templates):
 
 # ==================== 창 열기 / 한 판 진행 ====================
 
-def open_furniture_window(sct):
-    """직업 → 직업활동 순서로 눌러 가구만들기 창을 엶."""
-    if window_open(sct):
+def open_job_window():
+    """직업 창을 엶 (이미 떠 있으면 안 누름 — F2 를 또 누르면 닫혀버림)."""
+    if _layout is not None and find_win("job") is not None:
         return True
-    print("가구만들기 창이 안 보임 → 다시 열기")
-    direct_click(JOB_BTN, "직업")
-    time.sleep(random.uniform(0.7, 1.1))
-    direct_click(JOB_ACT_BTN, "직업활동")
-    for _ in range(20):
+    if JOB_KEY is not None:
+        print(f"  직업 창 열기 ({JOB_KEY.upper()} 키)")
+        step(f"키 {JOB_KEY}")
+        keyboard.send(JOB_KEY)
+    else:
+        direct_click(JOB_BTN, "직업")
+    if _layout is None:
+        time.sleep(random.uniform(0.7, 1.1))
+        return True
+    for _ in range(16):
         time.sleep(0.25)
-        if window_open(sct):
-            print("  가구만들기 창 열림 확인")
+        if find_win("job") is not None:
+            time.sleep(random.uniform(0.4, 0.8))
             return True
-    print("  [실패] 가구만들기 창이 안 열림")
+    print("  [실패] 직업 창이 안 열림")
+    return False
+
+
+def open_furniture_window(sct):
+    """직업 → 직업활동 순서로 눌러 제작 창을 엶. 열려 있으면 좌표만 갱신."""
+    if craft_open(sct):
+        return apply_craft_layout()
+    print("제작 창이 안 보임 → 다시 열기")
+    for attempt in range(3):
+        if not open_job_window():
+            continue
+        if not apply_job_layout():
+            continue
+        direct_click(JOB_ACT_BTN, "직업활동")
+        for _ in range(20):
+            time.sleep(0.25)
+            if craft_open(sct):
+                print("  제작 창 열림 확인")
+                time.sleep(random.uniform(0.6, 1.0))
+                return apply_craft_layout()
+        print(f"  제작 창이 안 열림 → 다시 시도 ({attempt + 2}번째)")
+    print("  [실패] 제작 창이 안 열림")
     return False
 
 
 def press_start(sct):
     """시작 버튼을 누르고, 카드판이 실제로 시작됐는지 확인."""
+    global _card_win
+    if _layout is not None:
+        # 시작 전부터 떠 있는 주장이 창(게임이 안 지운 유령 창)은 이번 판 창이 아님
+        stale = {getattr(w, "_hWnd", None) for w in find_windows("card")}
+        _card_win = None
     human_click(START_BTN)
     print("  시작 버튼 클릭!")
+    if _layout is not None:
+        t0 = time.time()
+        while _card_win is None:
+            if time.time() - t0 > CARD_OPEN_WAIT:
+                print(f"  [실패] 시작 후 {CARD_OPEN_WAIT}초 동안 "
+                      f"'{_layout['titles']['card']}' 창이 안 뜸")
+                return False
+            ws = find_windows("card", ignore=stale)
+            if ws:
+                _card_win = ws[0]
+            time.sleep(0.1)
+        apply_card_layout(_card_win)
+        print(f"  카드 창 확인 — 1행1열 {CARD1_CENTER}, 간격 "
+              f"{CARD_PITCH_X:.1f}x{CARD_PITCH_Y:.1f}")
     t0 = time.time()
     while time.time() - t0 < 6:
         time.sleep(0.25)
@@ -921,6 +1140,15 @@ def quit_all():
 def worker():
     global running, alive
     try:
+        if load_layout() is not None:
+            print(f"창 위치 파일 사용 ({os.path.basename(LAYOUT_FILE)}) — "
+                  f"창을 제목으로 찾아서 계산함")
+            if _gw is None:
+                print("[주의] pygetwindow 가 없어서 창을 못 찾음 — "
+                      "py -m pip install pygetwindow")
+        else:
+            print("[주의] match_layout.json 이 없음 → 고정 좌표 사용. "
+                  "py measure_match.py 로 먼저 재세요")
         templates = load_templates()
         recipe_names = {n for n, _ in RECIPE}
         templates = {k: v for k, v in templates.items() if k in recipe_names}
@@ -964,6 +1192,38 @@ def worker():
         alive = False
 
 
+def capture_items():
+    """제작 창 인벤토리의 아이콘을 items 폴더에 저장 (capture_items.py 와 같은 결과).
+
+    match_layout.json 으로 인벤토리 위치를 찾으므로 좌표를 따로 안 고쳐도 됨.
+    """
+    if load_layout() is None or not apply_craft_layout():
+        print("[중단] match_layout.json 이 없거나 제작 창이 안 보임")
+        return
+    outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "items")
+    os.makedirs(outdir, exist_ok=True)
+    half, m = CELL_SIZE // 2, 4
+    saved = 0
+    with mss.mss() as sct:
+        for r in range(ROWS):
+            for c in range(COLS):
+                nx = int(round(CELL1_CENTER[0] + c * PITCH_X))
+                ny = int(round(CELL1_CENTER[1] + r * PITCH_Y))
+                img = grab(sct, nx, ny, half + m)
+                ys, xs = np.nonzero(img.sum(axis=2) > 90)
+                if len(ys) < 20:
+                    continue                      # 빈 칸
+                cx = nx - (half + m) + int(xs.mean())
+                cy = ny - (half + m) + int(ys.mean())
+                icon = grab(sct, cx, cy, half)[:CELL_SIZE, :CELL_SIZE]
+                Image.fromarray(icon.astype("uint8")).save(
+                    os.path.join(outdir, f"cell_{r+1}_{c+1}.png"))
+                saved += 1
+    print(f"완료! {saved}개 저장 → {outdir}")
+    print("items 폴더에서 빈 칸/필요 없는 건 지우고, 나머지는 재료 이름으로 바꾸세요.")
+    print("예: cell_1_2.png → 나무판자.png  (같은 재료 여러 장은 나무판자1.png, 나무판자2.png)")
+
+
 def main():
     print("=" * 52)
     print(" 가구만들기 그림맞추기 풀 자동 봇")
@@ -981,7 +1241,11 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        if len(sys.argv) > 1 and sys.argv[1] in ("캡처", "capture"):
+            capture_items()
+            input("\n엔터를 누르면 창이 닫힙니다...")
+        else:
+            main()
     except Exception:
         import traceback
         print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")

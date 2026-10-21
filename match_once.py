@@ -6,7 +6,7 @@ auto_match.py(전체 자동)를 돌리기 전에, 짝맞추기 부분만 따로 
 재료 넣기 / 창 열기는 하지 않고, 이미 준비된 상태에서 시작 버튼부터 누름.
 
 ■ 사용법
-  1. 가구만들기 창을 열고, 재료를 직접 넣어서 '시작' 버튼을 누를 수 있는 상태로 만듦
+  1. 제작 창을 열고, 재료를 직접 넣어서 '시작' 버튼을 누를 수 있는 상태로 만듦
   2. cmd 에서:  py match_once.py
   3. F8 을 누르면 → 시작 버튼 클릭 → 카드 짝맞추기 → 한 판 끝나면 자동 종료
 
@@ -90,13 +90,15 @@ def main():
                 if not state["alive"]:
                     return
 
-                if not am.window_open(sct):
-                    print("[중단] 가구만들기 창이 안 보입니다.")
-                    print("       창을 열고 다시 실행하거나, auto_match.py 의")
-                    print(f"       WIN_POINT{am.WIN_POINT} / WIN_RGB{am.WIN_RGB} 를 확인하세요.")
+                if am.load_layout() is None:
+                    print("[주의] match_layout.json 이 없음 → auto_match.py 의 고정 좌표 사용")
+                if not (am.craft_open(sct) and am.apply_craft_layout()):
+                    print("[중단] 제작 창이 안 보입니다.")
+                    print("       직업활동으로 제작 창을 열고 다시 실행하세요.")
+                    print("       (창 위치를 아직 안 쟀으면:  py measure_match.py)")
                     state["alive"] = False
                     return
-                print("가구만들기 창 열림 확인")
+                print("제작 창 열림 확인")
 
                 # play_board 안에서 running/alive 를 보므로 켜줌
                 am.running = True
