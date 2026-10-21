@@ -125,12 +125,13 @@ AUTO_RESTART_SEC = 60    # 오류로 멈췄을 때 이 시간 뒤 자동 재시�
 # ★ 여기 하나만 만지면 전체 속도가 바뀝니다 (모든 이동/클릭에 적용됨).
 #   지금은 '속도 고정' 설정(아래 HURRY_FLOOR = 1.0)이라 처음부터 끝까지
 #   같은 속도로 움직입니다. 그 기준 실측값:
-#     0.7 → 클릭당 약 0.85초, 한 판 46초   ← 지금 설정
+#     0.6 → 0.7보다 약 15% 빠름             ← 지금 설정 ("아주 조금만 더 빠르게")
+#     0.7 → 클릭당 약 0.85초, 한 판 46초
 #     0.9 → 클릭당 약 1.1초,  한 판 60초 (제한시간 넘길 수 있음)
 #     1.2 → 클릭당 약 1.2초,  한 판 77초 (못 끝냄)
 #   참고: 영상 속 사람은 클릭당 약 0.50초였으므로 0.7 도 사람보다 느립니다.
 #   판을 자꾸 못 끝내면 0.6, 0.5 로 낮추세요.
-MOUSE_SPEED = 0.7
+MOUSE_SPEED = 0.6
 THINK_CHANCE = 0.22      # 카드를 고르기 전에 잠깐 '어디 눌러볼까' 하고 멈추는 빈도
 THINK_SEC = (0.25, 0.65) # 그때 멈추는 시간(초)
 LOOK_SEC = (0.15, 0.40)  # 카드가 뒤집힌 뒤 '무슨 그림인지 보는' 시간.
@@ -714,6 +715,25 @@ def play_board(sct, verbose=True):
                     not_pair.clear()
                     stuck = 0
                 first = random.choice(backs)
+
+        # ---- 직전 턴 두 번째 카드 외우기 ----
+        # 지난 턴에 두 번째로 연 카드는 클릭한 커서가 그 위에 그대로 있어서 못
+        # 외운 상태이고, 이번 턴 첫 클릭을 하는 순간 닫혀버림. 그래서 누르기 전에
+        # 커서를 이번에 누를 카드 쪽으로 먼저 옮겨(어차피 가야 할 길) 그 카드가
+        # 깨끗하게 보일 때 외우고, 그걸로 아는 짝이 생겼으면 그 짝부터 노림.
+        unseen_open = [p for p, s in states.items()
+                       if s == "O" and p not in matched and p not in memory]
+        if unseen_open:
+            hover_to(card_center(*first))
+            states, images = read_board(sct)
+            absorb(images)
+            pair = find_known_pair(memory, not_pair)
+            if pair and second is None:
+                _, first, second = pair
+                # 방금 외운 카드는 아직 앞면이라 누를 수 없음 → 짝을 먼저 누르면
+                # 그 순간 닫히므로 두 번째로 누름
+                if states.get(first) == "O":
+                    first, second = second, first
 
         # ---- 첫 클릭 ----
         click_card(card_center(*first))
