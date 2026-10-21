@@ -59,6 +59,10 @@ except Exception:
 
 
 def main():
+    if am.already_running():
+        print("[중단] 가구만들기 봇(auto_match / match_once)이 이미 다른 창에서 켜져 있어요.")
+        print("       다른 창을 먼저 닫으세요.")
+        return
     print("=" * 52)
     print(" 가구만들기 한 판 시험 (짝맞추기만)")
     print(" 재료를 넣고 '시작' 을 누를 수 있는 상태로 만든 뒤 F8")
