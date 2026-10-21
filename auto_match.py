@@ -1363,7 +1363,30 @@ def capture_items():
     print("예: cell_1_2.png → 나무판자.png  (같은 재료 여러 장은 나무판자1.png, 나무판자2.png)")
 
 
+_lock_sock = None
+
+
+def already_running():
+    """같은 봇이 이미 켜져 있으면 True (컴퓨터 안 전용 포트를 하나 잡아서 확인).
+
+    창을 여러 개 띄워 봇이 동시에 돌면 재료를 중복으로 넣는 등 서로 꼬임.
+    """
+    global _lock_sock
+    import socket
+    _lock_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        _lock_sock.bind(("127.0.0.1", 47731))
+        return False
+    except OSError:
+        return True
+
+
 def main():
+    if already_running():
+        print("[중단] 가구만들기 봇(auto_match / match_once)이 이미 다른 창에서 켜져 있어요.")
+        print("       같이 돌면 재료를 중복으로 넣는 등 서로 꼬이니, 다른 창을 먼저 닫으세요.")
+        input("\n엔터를 누르면 창이 닫힙니다...")
+        return
     print("=" * 52)
     print(" 가구만들기 그림맞추기 풀 자동 봇")
     print(" F8 = 시작/정지    F9 = 종료")
