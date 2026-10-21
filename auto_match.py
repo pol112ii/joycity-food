@@ -125,13 +125,14 @@ AUTO_RESTART_SEC = 60    # 오류로 멈췄을 때 이 시간 뒤 자동 재시�
 # ★ 여기 하나만 만지면 전체 속도가 바뀝니다 (모든 이동/클릭에 적용됨).
 #   지금은 '속도 고정' 설정(아래 HURRY_FLOOR = 1.0)이라 처음부터 끝까지
 #   같은 속도로 움직입니다. 그 기준 실측값:
-#     0.6 → 0.7보다 약 15% 빠름             ← 지금 설정 ("아주 조금만 더 빠르게")
+#     0.4 → 0.7보다 약 40% 빠름             ← 지금 설정
+#     0.6 → 0.7보다 약 15% 빠름
 #     0.7 → 클릭당 약 0.85초, 한 판 46초
 #     0.9 → 클릭당 약 1.1초,  한 판 60초 (제한시간 넘길 수 있음)
 #     1.2 → 클릭당 약 1.2초,  한 판 77초 (못 끝냄)
 #   참고: 영상 속 사람은 클릭당 약 0.50초였으므로 0.7 도 사람보다 느립니다.
 #   판을 자꾸 못 끝내면 0.6, 0.5 로 낮추세요.
-MOUSE_SPEED = 0.6
+MOUSE_SPEED = 0.4
 THINK_CHANCE = 0.22      # 카드를 고르기 전에 잠깐 '어디 눌러볼까' 하고 멈추는 빈도
 THINK_SEC = (0.25, 0.65) # 그때 멈추는 시간(초)
 LOOK_SEC = (0.15, 0.40)  # 카드가 뒤집힌 뒤 '무슨 그림인지 보는' 시간.
@@ -671,10 +672,15 @@ def play_board(sct, verbose=True):
         return {"clicks": clicks, "bombs": bombs, "wrong": wrong,
                 "secs": round(time.time() - t0, 1), "matched": len(matched)}
 
+    def trying():
+        """방금 짝이라 믿고 누른 두 장 — 결과 확인 전이라 기억/확인 대상에서 뺌."""
+        return set(pending[:2]) if pending else set()
+
     def absorb(images):
         """지금 보이는 카드 중 커서에 안 가린 것들을 기억에 담음."""
+        skip = trying()
         for p, img in images.items():
-            if p not in matched:
+            if p not in matched and p not in skip:
                 memory[p] = img
 
     def done(ok):
@@ -721,12 +727,34 @@ def play_board(sct, verbose=True):
         # 외운 상태이고, 이번 턴 첫 클릭을 하는 순간 닫혀버림. 그래서 누르기 전에
         # 커서를 이번에 누를 카드 쪽으로 먼저 옮겨(어차피 가야 할 길) 그 카드가
         # 깨끗하게 보일 때 외우고, 그걸로 아는 짝이 생겼으면 그 짝부터 노림.
+        # (방금 짝으로 누른 두 장은 맞췄으면 그대로 열려 있을 뿐이니 빼야 함 —
+        #  안 빼면 맞춘 카드로 커서를 괜히 한 번 더 가져가고 다시 누르려 함)
+        skip = trying()
         unseen_open = [p for p, s in states.items()
-                       if s == "O" and p not in matched and p not in memory]
+                       if s == "O" and p not in matched and p not in memory
+                       and p not in skip]
         if unseen_open:
             hover_to(card_center(*first))
             states, images = read_board(sct)
             absorb(images)
+            # 앞면인 두 장이 같은 그림이면 = 지난 턴에 탐색하다 이미 맞춘 것.
+            # 다시 누를 필요 없이 '맞춘 걸로 보이는 짝'으로 넘기고(다음 턴에 확인),
+            # 기억에서 빼서 그 두 장으로 커서가 다시 가지 않게 함.
+            face_up = {p: m for p, m in memory.items() if states.get(p) == "O"}
+            done_pair = find_known_pair(face_up, not_pair)
+            if done_pair:
+                _, a, b = done_pair
+                pending = (a, b, memory.pop(a), memory.pop(b))
+                if verbose:
+                    print(f"  · 탐색 중 같은 그림 발견 ({a[0]+1},{a[1]+1})"
+                          f" + ({b[0]+1},{b[1]+1})")
+                if first in (a, b) or second in (a, b):
+                    pair = find_known_pair(memory, not_pair)
+                    if pair:
+                        _, first, second = pair
+                    else:
+                        first = pick_unknown(states, memory) or first
+                        second = None
             pair = find_known_pair(memory, not_pair)
             if pair and second is None:
                 _, first, second = pair
@@ -739,6 +767,12 @@ def play_board(sct, verbose=True):
         click_card(card_center(*first))
         clicks += 1
         states, images = wait_flip(sct, first, "?")
+        if states.get(first) not in ("O", "X"):
+            # 클릭이 안 먹어서 안 뒤집힘 — 여기서 다음 카드를 누르면 게임의 짝 순서와
+            # 어긋나서(봇의 두 번째 = 게임의 첫 번째) 계속 엉뚱하게 누르게 됨 → 이번 턴 무효
+            if verbose:
+                print(f"  (({first[0]+1},{first[1]+1}) 클릭이 안 먹음 → 다시)")
+            continue
 
         # 첫 클릭 직후엔 '맞춘 카드'만 열려있음 (틀린 두 장은 이 클릭에 닫힘)
         matched = {p for p, s in states.items() if s == "O" and p != first}
@@ -776,7 +810,12 @@ def play_board(sct, verbose=True):
             ib = memory.get(second)
             click_card(card_center(*second))
             clicks += 1
-            wait_flip(sct, second, "?")
+            st2, _ = wait_flip(sct, second, "?")
+            if st2.get(second) not in ("O", "X"):
+                # 안 뒤집힘 → 기억은 그대로 두고 다음 턴에 같은 짝을 다시 노림
+                if verbose:
+                    print(f"  (({second[0]+1},{second[1]+1}) 클릭이 안 먹음 → 다시)")
+                continue
             if ia is not None and ib is not None:
                 # 결과가 나올 때까지 기억에서 빼둠 (안 그러면 다음 턴에 또 같은
                 # 짝을 골라 검증이 헛나감). 틀렸으면 위에서 되돌림.
@@ -804,7 +843,11 @@ def play_board(sct, verbose=True):
             ib = memory.get(b)
             click_card(card_center(*b))
             clicks += 1
-            wait_flip(sct, b, "?")
+            stb, _ = wait_flip(sct, b, "?")
+            if stb.get(b) not in ("O", "X"):
+                if verbose:
+                    print(f"  (({b[0]+1},{b[1]+1}) 클릭이 안 먹음 → 다시)")
+                continue
             memory.pop(first, None)
             memory.pop(b, None)
             pending = (first, b, ia, ib)
@@ -813,6 +856,10 @@ def play_board(sct, verbose=True):
         click_card(card_center(*c2))
         clicks += 1
         states2, images2 = wait_flip(sct, c2, "?")
+        if states2.get(c2) not in ("O", "X"):
+            if verbose:
+                print(f"  (({c2[0]+1},{c2[1]+1}) 클릭이 안 먹음 → 다시)")
+            continue
         if states2.get(c2) == "X":
             if verbose:
                 print(f"  💣 폭탄 ({c2[0]+1},{c2[1]+1}) → 자리가 섞임, 기억 초기화")
