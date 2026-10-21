@@ -1633,7 +1633,7 @@ def worker():
         recipe_names = {name for name, _ in RECIPE}
         templates = {k: v for k, v in templates.items() if k in recipe_names}
         if not templates:
-            print("[주의] items 폴더에 RECIPE 재료 아이콘이 없음 — capture_items.py부터 실행")
+            print("[주의] items 폴더에 RECIPE 재료 아이콘이 없음 — py auto_cook.py 캡처 부터 (사용법.txt 6번)")
         else:
             print("등록된 재료:", ", ".join(templates))
             missing = recipe_names - templates.keys()

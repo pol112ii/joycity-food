@@ -58,10 +58,28 @@ def match_region(region, tpl):
     return float(np.where(valid, d, np.inf).min())
 
 
+def use_layout():
+    """cook_layout.json 이 있으면 제작 창을 제목으로 찾아 인벤토리 위치를 계산.
+
+    없으면 이 파일 위쪽의 고정 좌표를 그대로 씀 (예전 방식).
+    """
+    global CELL1_CENTER, PITCH_X, PITCH_Y
+    import auto_cook as ac
+    if ac.load_layout() is None:
+        return
+    if not ac.apply_craft_layout():
+        print("[주의] 제작 창을 못 찾음 — 제작 창을 띄우고 다시 실행하세요")
+        return
+    CELL1_CENTER, PITCH_X, PITCH_Y = ac.CELL1_CENTER, ac.PITCH_X, ac.PITCH_Y
+    print(f"(cook_layout.json 사용 — 첫 칸 {CELL1_CENTER}, 간격 {PITCH_X:.1f}x{PITCH_Y:.1f})")
+
+
 def main():
     import mss
     import numpy as np
     from PIL import Image
+
+    use_layout()
 
     folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "items")
     templates = {}
