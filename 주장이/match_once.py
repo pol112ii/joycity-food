@@ -45,9 +45,7 @@ except ImportError as e:
     print(f"이 폴더의 py 파일: "
           f"{', '.join(f for f in os.listdir(here) if f.endswith('.py')) or '(없음)'}")
     print()
-    print("cmd 에서 아래를 실행해서 받으세요:")
-    print('  curl -o auto_match.py '
-          'https://raw.githubusercontent.com/pol112ii/joycity-food/main/auto_match.py')
+    print("주장이 폴더의 파일들을 전부 한 폴더에 같이 두세요 (사용법.txt 3번).")
     input("\n엔터를 누르면 창이 닫힙니다...")
     sys.exit(1)
 except Exception:
