@@ -92,7 +92,9 @@ def card_image(sct, r, c):
 
 
 def window_open(sct):
-    """가구만들기 창이 열려있는지 (기준점 색이 맞는지)."""
+    """카드 창이 열려있는지 (layout 이 있으면 창 제목, 없으면 기준점 색)."""
+    if _am is not None:
+        return _am.window_open(sct)
     px = grab(sct, WIN_POINT[0], WIN_POINT[1], 2).reshape(-1, 3)
     return bool(np.abs(px - np.array(WIN_RGB)).sum(axis=1).min() <= WIN_TOL)
 
@@ -152,11 +154,40 @@ def save_debug(sct):
     print("  → 빨간 동그라미가 카드에 정확히 겹쳐야 좌표가 맞는 것")
 
 
+_am = None   # match_layout.json 이 있으면 auto_match 의 창 찾기를 빌려 씀
+
+
+def use_layout():
+    """match_layout.json 이 있으면 주장이 창을 제목으로 찾아 카드 좌표를 계산.
+
+    없으면 이 파일 위쪽의 고정 좌표를 그대로 씀 (예전 방식).
+    """
+    global _am, CARD1_CENTER, CARD_PITCH_X, CARD_PITCH_Y, RING_IN, RING_OUT, IMG_R, RING
+    import auto_match as am
+    if am.load_layout() is None:
+        print("(match_layout.json 없음 → 이 파일의 고정 좌표 사용)")
+        return
+    title = am._layout["titles"]["card"]
+    print(f"'{title}' 카드 창을 찾는 중... (시작을 눌러 카드판을 띄우세요)")
+    while True:
+        w = am.find_win("card")
+        if w is not None:
+            break
+        time.sleep(0.3)
+    am._card_win = w
+    am.apply_card_layout(w)
+    _am = am
+    CARD1_CENTER, CARD_PITCH_X, CARD_PITCH_Y = am.CARD1_CENTER, am.CARD_PITCH_X, am.CARD_PITCH_Y
+    RING_IN, RING_OUT, IMG_R, RING = am.RING_IN, am.RING_OUT, am.IMG_R, am.RING
+    print(f"카드 창 찾음 — 1행1열 {CARD1_CENTER}, 간격 {CARD_PITCH_X:.1f}x{CARD_PITCH_Y:.1f}")
+
+
 def main():
     print("=" * 52)
     print(" 가구만들기 인식 확인 (클릭 안 함, 보기만)")
     print(" 끝내려면 Ctrl+C")
     print("=" * 52)
+    use_layout()
     with mss.mss() as sct:
         save_debug(sct)
         print()
