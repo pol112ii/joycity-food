@@ -1003,6 +1003,45 @@ def filled_slots(sct, n):
     return [i for i in range(n) if slot_filled(sct, i)]
 
 
+def stable_filled(sct, n):
+    """찬 슬롯 수를 두 번 연속 같게 읽힐 때까지 읽음 (넣는 중 깜빡임/툴팁 대비)."""
+    last = len(filled_slots(sct, n))
+    for _ in range(6):
+        time.sleep(0.12)
+        now = len(filled_slots(sct, n))
+        if now == last:
+            return now
+        last = now
+    return last
+
+
+def slot_item(sct, templates, i):
+    """슬롯 i 에 든 재료 이름 (아이콘으로 판정). 빈 슬롯/모르는 것이면 (None, 차이값)."""
+    region = grab_cell(sct, int(round(SLOT1_CENTER[0] + i * SLOT_PITCH_X)),
+                       int(round(SLOT1_CENTER[1])))
+    best_name, best_diff = None, 1e9
+    for name, tpls in templates.items():
+        for tpl in tpls:
+            d = match_region(region, tpl)
+            if d < best_diff:
+                best_name, best_diff = name, d
+    if best_name is None or best_diff > threshold_for(best_name):
+        return None, best_diff
+    return best_name, best_diff
+
+
+def save_debug_slots(sct):
+    """슬롯 줄을 캡처해서 debug_slots.png 로 저장 (슬롯 판정이 이상할 때 확인용)."""
+    half = int(SLOT_PITCH_X * 0.6)
+    left = int(SLOT1_CENTER[0] - half)
+    top = int(SLOT1_CENTER[1] - half)
+    w = int(SLOT_PITCH_X * (NUM_SLOTS - 1) + half * 2)
+    shot = sct.grab({"left": left, "top": top, "width": w, "height": half * 2})
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "debug_slots.png")
+    Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX").save(path)
+    print(f"    (슬롯 사진 저장: {path})")
+
+
 def fill_slots(sct, templates):
     """레시피대로 재료를 우클릭으로 넣음. 성공하면 True."""
     global _scan_cache, _rounds_since_scan
@@ -1066,7 +1105,17 @@ def fill_slots(sct, templates):
                 continue
             print(f"  '{name}' 우클릭으로 넣기 ({filled+1}/{target})")
             right_click_item(src)
-            now = len(filled_slots(sct, target))
+            now = stable_filled(sct, target)
+            if now > filled + 1:
+                # 한 번 넣었는데 2칸 이상 늘었다고 읽힘 = 판정이 흔들린 것(또는 두 개가
+                # 들어감). 한 칸만 들어간 걸로 치고 계속 — 진짜 내용은 시작 전에 확인함
+                print(f"    [주의] 한 번 넣었는데 슬롯이 {filled}→{now}칸으로 읽힘 "
+                      f"— 밝은픽셀 {[slot_px(sct, i) for i in range(target)]}")
+                try:
+                    save_debug_slots(sct)
+                except Exception:
+                    pass
+                now = filled + 1
             if now > filled:
                 filled = now
                 placed = True        # 성공한 칸은 그대로 둠 (여러 개 쌓여 있으면 계속 씀)
@@ -1084,7 +1133,30 @@ def fill_slots(sct, templates):
         print(f"[중단] 시작 직전 확인 — 슬롯 {empty} 이 비어 있음")
         _scan_cache = None
         return False
-    print(f"  재료 {target}개 전부 들어간 것 확인")
+
+    # 시작 직전 — 슬롯마다 '무슨 재료'가 들었는지 아이콘으로 확인해서 레시피와 비교
+    got = [slot_item(sct, templates, i) for i in range(target)]
+    names = [n for n, _ in got]
+    desc = ", ".join(f"슬롯{i+1}={n or '?'}" for i, n in enumerate(names))
+    count = {}
+    for n in names:
+        if n:
+            count[n] = count.get(n, 0) + 1
+    over = [n for n in count if count[n] > need.get(n, 0)]
+    if over or (None not in names and count != need):
+        print(f"[중단] 슬롯 재료가 레시피와 다름 — {desc}")
+        print(f"       레시피: {', '.join(f'{n} {c}개' for n, c in need.items())}"
+              f"  → 슬롯을 비우고 다시 하세요 (시작 안 함)")
+        try:
+            save_debug_slots(sct)
+        except Exception:
+            pass
+        _scan_cache = None
+        return False
+    if None in names:
+        print(f"  [주의] 슬롯 아이콘을 다 알아보진 못함 ({desc}, 차이값 "
+              f"{[round(d) for _, d in got]}) — 칸 수는 맞아서 진행")
+    print(f"  재료 {target}개 전부 들어간 것 확인 ({desc})")
     _rounds_since_scan += 1
     return True
 
