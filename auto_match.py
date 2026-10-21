@@ -715,6 +715,25 @@ def play_board(sct, verbose=True):
                     stuck = 0
                 first = random.choice(backs)
 
+        # ---- 직전 턴 두 번째 카드 외우기 ----
+        # 지난 턴에 두 번째로 연 카드는 클릭한 커서가 그 위에 그대로 있어서 못
+        # 외운 상태이고, 이번 턴 첫 클릭을 하는 순간 닫혀버림. 그래서 누르기 전에
+        # 커서를 이번에 누를 카드 쪽으로 먼저 옮겨(어차피 가야 할 길) 그 카드가
+        # 깨끗하게 보일 때 외우고, 그걸로 아는 짝이 생겼으면 그 짝부터 노림.
+        unseen_open = [p for p, s in states.items()
+                       if s == "O" and p not in matched and p not in memory]
+        if unseen_open:
+            hover_to(card_center(*first))
+            states, images = read_board(sct)
+            absorb(images)
+            pair = find_known_pair(memory, not_pair)
+            if pair and second is None:
+                _, first, second = pair
+                # 방금 외운 카드는 아직 앞면이라 누를 수 없음 → 짝을 먼저 누르면
+                # 그 순간 닫히므로 두 번째로 누름
+                if states.get(first) == "O":
+                    first, second = second, first
+
         # ---- 첫 클릭 ----
         click_card(card_center(*first))
         clicks += 1
