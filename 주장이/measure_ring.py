@@ -172,7 +172,12 @@ def main():
     print(f"게임 창 '{mw.title}' {mw.width}x{mw.height} / 제작 창 폭 {cw.width}")
     os.makedirs(SPRITE_DIR, exist_ok=True)
 
-    data = {"titles": {"main": mw.title}, "ref_craft_w": cw.width,
+    try:
+        import ctypes
+        dpi = int(ctypes.windll.user32.GetDpiForSystem())     # 화면 배율 (100% = 96)
+    except Exception:
+        dpi = None
+    data = {"titles": {"main": mw.title}, "ref_craft_w": cw.width, "dpi": dpi,
             "points": {}, "sprites": {}}
     i = 0
     box_first = None

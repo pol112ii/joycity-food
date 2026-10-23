@@ -124,11 +124,20 @@ def main_win():
 _last_scale = None
 
 
+def system_dpi():
+    """윈도우 화면 배율(DPI). 100% = 96, 125% = 120. 못 읽으면 None."""
+    try:
+        import ctypes
+        return int(ctypes.windll.user32.GetDpiForSystem())
+    except Exception:
+        return None
+
+
 def scale():
     """측정한 컴퓨터 대비 지금 화면 배율 — 떠 있는 창(제작/아이템) 폭으로 계산.
 
     제작 창은 닫혀 있을 때가 많아서, 늘 떠 있는 아이템 창으로도 계산함.
-    둘 다 없으면 마지막으로 계산한 값(처음이면 1.0).
+    둘 다 없으면 윈도우 화면 배율(DPI) 비율, 그것도 안 되면 마지막 값(처음이면 1.0).
     """
     global _last_scale
     w = find_title(_layout_title("craft"))
@@ -140,6 +149,9 @@ def scale():
     if w is not None:
         _last_scale = w.width / ref_item[0]
         return _last_scale
+    dpi, ref_dpi = system_dpi(), _layout.get("dpi")
+    if dpi and ref_dpi:
+        return dpi / ref_dpi
     return _last_scale or 1.0
 
 
