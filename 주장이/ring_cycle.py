@@ -96,10 +96,9 @@ def load():
             return False
     _sprites = {}
     for key, v in _layout["sprites"].items():
-        img = cv2.imread(os.path.join(SPRITE_DIR, v["file"]))
-        if img is None:
-            img = cv2.cvtColor(np.array(Image.open(os.path.join(SPRITE_DIR, v["file"]))
-                                        .convert("RGB")), cv2.COLOR_RGB2BGR)
+        # (cv2.imread 는 한글 폴더 경로를 못 읽어서 PIL 로 읽음)
+        img = cv2.cvtColor(np.array(Image.open(os.path.join(SPRITE_DIR, v["file"]))
+                                    .convert("RGB")), cv2.COLOR_RGB2BGR)
         _sprites[key] = img
     return True
 
@@ -733,13 +732,22 @@ def locate_near(sct, c, radius):
         return None
     img = (cv2.cvtColor(shot_bgr(sct, l, t, r - l, b - t), cv2.COLOR_BGR2GRAY) > 200).astype(np.float32)
     res = cv2.matchTemplate(img, tpl, cv2.TM_CCOEFF_NORMED)
-    _, mx, _, (x, y) = cv2.minMaxLoc(res)
-    if mx < LABEL_SURE:
+    cands = []
+    for _ in range(6):
+        _, mx, _, (x, y) = cv2.minMaxLoc(res)
+        if mx < LABEL_SURE:
+            break
+        cx, cy = l + x + tw / 2, t + y + th / 2
+        cands.append((int(cx), int(cy), float(mx)))
+        res[max(0, y - th):y + th + 1, max(0, x - tw):x + tw + 1] = -1
+    cands = _far(cands, _bad_carts)       # 안 눌리던 리어카맨은 빼고
+    if not cands:
         return None
-    return (int(l + x + tw / 2), int(t + y + th / 2), float(mx))
+    # 여러 명이면 방금 보던 리어카맨(가장 가까운 것)을 계속 따라감
+    return min(cands, key=lambda q: (q[0] - c[0]) ** 2 + (q[1] - c[1]) ** 2)
 
 
-def click_cart(sct, cart, body):
+def click_cart(sct, cart, body, extra=(0, 0)):
     """걸어 다니는 리어카맨을 누름.
 
     잠깐 사이에 두 번 위치를 재서 걷는 속도/방향을 구하고, 마우스가 도착할
@@ -760,13 +768,14 @@ def click_cart(sct, cart, body):
     d = random.uniform(0.22, 0.32)
     lead = (time.time() - t2) + d + 0.08
     bx, by = body(p2)
+    bx, by = bx + extra[0], by + extra[1]
     tx, ty = int(bx + vx * lead), int(by + vy * lead)
     am.smooth_move_to(tx, ty, d, bow=6)
     # 도착해서 한 번 더 확인 — 예상보다 많이 어긋났으면(벽에서 방향을 틀었을 때 등) 살짝 고침
     p3 = locate_near(sct, p2, 120)
     if p3:
         nx, ny = body(p3)
-        nx, ny = int(nx + vx * 0.06), int(ny + vy * 0.06)
+        nx, ny = int(nx + extra[0] + vx * 0.06), int(ny + extra[1] + vy * 0.06)
         if abs(nx - tx) > 18 or abs(ny - ty) > 18:
             am.smooth_move_to(nx, ny, random.uniform(0.05, 0.08), bow=0)
             tx, ty = nx, ny
@@ -798,10 +807,17 @@ def sell_all(sct):
     def body(c):
         return int(c[0] + off["off_x"] * k), int(c[1] + off["off_y"] * k)
 
+    # 리어카맨 몸통 주변을 조금씩 다르게 2~3번 눌러봄 (가운데 → 조금 위 → 조금 아래)
+    spots = [(0, 0), (0, int(-16 * k)), (int(6 * k), int(14 * k))]
     for attempt in range(5):
-        tx, ty, cart = click_cart(sct, cart, body)
-        print(f"  리어카맨 클릭 → ({tx}, {ty})  (이름 일치 {cart[2]:.2f})")
-        if wait_title("sell", True, 3):
+        opened = False
+        for sx, sy in spots:
+            tx, ty, cart = click_cart(sct, cart, body, (sx, sy))
+            print(f"  리어카맨 클릭 → ({tx}, {ty})  (이름 일치 {cart[2]:.2f})")
+            if wait_title("sell", True, 1.2):
+                opened = True
+                break
+        if opened:
             break
         print("  되팔기 창이 안 뜸 → 다시")
         fails += 1
