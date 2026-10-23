@@ -140,7 +140,7 @@ def find_label_above(sct, x, y):
             best = (dist, bx, by, bw, bh)
     if best is None:
         return None
-    _, bx, by, bw, bh = best
+    _, bx, by, bw, bh = (int(v) for v in best)          # numpy 숫자 → 보통 숫자 (파일 저장용)
     x0, y0 = left + bx - 2, top + by - 2
     x1, y1 = left + bx + bw + 2, top + by + bh + 2
     crop = sct.grab({"left": x0, "top": y0, "width": x1 - x0, "height": y1 - y0})
@@ -292,8 +292,12 @@ def main():
           f" / 세로 {(p['item_row5_first']['dy'] - p['item_first']['dy']) / 4:.1f}")
     print(f"   그림: {', '.join(v['file'] for v in data['sprites'].values())}")
     data["saved_at"] = time.strftime("%Y-%m-%d %H:%M")
-    with open(OUT, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
+    # 임시 파일에 다 쓴 다음 바꿔치기 — 저장 중 오류가 나도 반쯤 쓴 파일이 남지 않게
+    tmp = OUT + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1,
+                  default=lambda o: o.item() if hasattr(o, "item") else str(o))
+    os.replace(tmp, OUT)
     print(f"\n저장 완료: {OUT}")
     print("이 화면 내용을 복사해서 보내주세요 (점검용).")
 

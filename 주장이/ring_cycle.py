@@ -76,8 +76,12 @@ def load():
     if not os.path.exists(LAYOUT_FILE):
         print("[중단] ring_layout.json 이 없어요 — py measure_ring.py 부터")
         return False
-    with open(LAYOUT_FILE, encoding="utf-8") as f:
-        _layout = json.load(f)
+    try:
+        with open(LAYOUT_FILE, encoding="utf-8") as f:
+            _layout = json.load(f)
+    except ValueError:
+        print("[중단] ring_layout.json 이 깨져 있어요 (저장이 덜 됨) — py measure_ring.py 를 다시 하세요")
+        return False
     if am.load_layout() is None:
         print("[중단] match_layout.json 이 없어요 — 주장이 봇 준비(사용법.txt 4번)부터")
         return False
