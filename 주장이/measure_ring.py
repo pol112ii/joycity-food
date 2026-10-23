@@ -269,6 +269,7 @@ def main():
             print(f"   [다시] 아까 잰 창('{data['titles'][wk]}')과 다른 창('{w.title}')이에요")
             continue
         data["titles"][wk] = w.title
+        data.setdefault("sizes", {})[wk] = [w.width, w.height]
         data["points"][name] = {"win": wk, "fx": round((x - w.left) / w.width, 5),
                                 "fy": round((y - w.top) / w.height, 5),
                                 "dx": x - w.left, "dy": y - w.top}
