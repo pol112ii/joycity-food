@@ -523,15 +523,25 @@ def ability_ready(sct, timeout=4.0):
     return False
 
 
-def summon_cart(sct):
+_bad_carts = []                 # 눌러도 되팔기 창이 안 열리던 리어카맨 자리 (다음 바퀴에도 기억)
+
+
+def _far(found, bad, dist=70):
+    """bad(안 눌리던 자리) 근처에서 찾은 건 뺌."""
+    return [c for c in found if all((c[0] - b[0]) ** 2 + (c[1] - b[1]) ** 2 > dist ** 2 for b in bad)]
+
+
+def summon_cart(sct, bad=(), reuse=True):
     """능력 → 고물소환 → 능력 창 닫기 → 리어카맨이 나타나면 위치 반환.
 
     고물소환은 누를 때마다 한 명씩 생기므로 한 번만 누르고, 리어카맨이 한참
     안 보일 때만(클릭이 씹혔을 때) 한 번 더 시도함.
     """
-    old = find_sprite(sct, "cart_label", LABEL_SURE, binary=True)
-    if old:
-        return old[0]                       # 이미 소환된 리어카맨이 있음
+    if reuse:
+        old = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), _bad_carts)
+        if old:
+            print(f"  이미 있는 리어카맨 이름을 찾음 ({old[0][0]}, {old[0][1]}, 일치 {old[0][2]:.2f})")
+            return old[0]                   # 이미 소환된 리어카맨이 있음
     for attempt in range(2):
         if find_title(_layout["titles"]["ability"]) is None:
             am.direct_click(main_pt("ability_icon"), "능력")
@@ -546,7 +556,7 @@ def summon_cart(sct):
         wait_title("ability", False, 3)
         t0 = time.time()
         while running and alive and time.time() - t0 < CART_WAIT:
-            found = find_sprite(sct, "cart_label", LABEL_SURE, binary=True)
+            found = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), bad)
             if found:
                 return found[0]
             time.sleep(0.5)
@@ -554,6 +564,25 @@ def summon_cart(sct):
             print(f"  고물소환 후 {CART_WAIT}초 동안 리어카맨이 안 보임 → 한 번 더 소환")
     print("[문제] 리어카맨이 안 나타남 (체력 부족이거나 이름 글자 그림이 안 맞음)")
     return None
+
+
+def save_cart_debug(sct, click, cart):
+    """리어카맨이 안 눌렸을 때 게임 화면을 cart_debug.png 로 저장 (초록 = 찾은 이름, 빨강 = 누른 곳)."""
+    try:
+        w = main_win()
+        if w is None:
+            return
+        from PIL import ImageDraw
+        img = Image.fromarray(shot_bgr(sct, w.left, w.top, w.width, w.height)[:, :, ::-1])
+        d = ImageDraw.Draw(img)
+        lx, ly = cart[0] - w.left, cart[1] - w.top
+        d.rectangle([lx - 40, ly - 12, lx + 40, ly + 12], outline=(0, 255, 0), width=2)
+        x, y = click[0] - w.left, click[1] - w.top
+        d.ellipse([x - 6, y - 6, x + 6, y + 6], outline=(255, 0, 0), width=3)
+        img.save(os.path.join(HERE, "cart_debug.png"))
+        print(f"  → 화면을 cart_debug.png 로 저장 (이름 일치 {cart[2]:.2f})")
+    except Exception as e:
+        print("  (디버그 저장 실패:", e, ")")
 
 
 def save_sell_debug(sct, w, cells, names):
@@ -589,6 +618,9 @@ def sell_all(sct):
     cart = summon_cart(sct)
     if cart is None:
         return False
+    bad = _bad_carts
+    fails = 0
+    summoned_new = False
     off = _layout["points"]["cart_body"]
     k = scale()
 
@@ -599,7 +631,7 @@ def sell_all(sct):
         # 리어카맨은 계속 걸어 다님 → 다가간 뒤 한 번 더 찾아서 그 자리를 누름
         tx, ty = body(cart)
         am.smooth_move_to(tx, ty, random.uniform(0.25, 0.4) * am.MOUSE_SPEED, bow=8)
-        again = find_sprite(sct, "cart_label", LABEL_SURE, binary=True)
+        again = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), bad)
         if again:
             cart = min(again, key=lambda c: (c[0] - cart[0]) ** 2 + (c[1] - cart[1]) ** 2)
             tx, ty = body(cart)
@@ -612,11 +644,25 @@ def sell_all(sct):
         if wait_title("sell", True, 3):
             break
         print("  되팔기 창이 안 뜸 → 다시")
-        again = find_sprite(sct, "cart_label", LABEL_SURE, binary=True)
+        fails += 1
+        if fails == 1:
+            save_cart_debug(sct, (tx, ty), cart)
+        if fails >= 2 and not summoned_new:
+            # 같은 자리를 두 번 눌러도 안 열림 → 남아 있던(눌리지 않는) 리어카맨이거나 잘못 찾은 것
+            # → 그 자리는 빼고 새로 소환
+            bad.append(cart[:2])
+            print("  그 자리는 진짜 리어카맨이 아닌 것 같음 → 새로 소환")
+            summoned_new = True
+            new = summon_cart(sct, bad=bad, reuse=False)
+            if new is None:
+                return False
+            cart = new
+            continue
+        again = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), bad)
         if again:
             cart = again[0]
     else:
-        print("[문제] 리어카맨을 눌러도 되팔기 창이 안 뜸")
+        print("[문제] 리어카맨을 눌러도 되팔기 창이 안 뜸 — cart_debug.png 를 보내주세요")
         return False
     time.sleep(random.uniform(0.5, 0.8))
     w = find_title(_layout["titles"]["sell"])
