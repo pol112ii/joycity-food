@@ -240,24 +240,47 @@ def other_windows():
     return rects
 
 
+_best_size = {}     # 그림별로 잘 맞았던 크기 배율 (다음엔 그것부터 씀)
+
+
 def find_sprite(sct, key, sure, binary=False):
-    """메인 창에서 그림(key)을 찾아 [(중심x, 중심y, 점수), ...] (점수 높은 순)."""
+    """메인 창에서 그림(key)을 찾아 [(중심x, 중심y, 점수), ...] (점수 높은 순).
+
+    화면 배율이 측정한 컴퓨터와 다르면 그림 크기도 다른데, 게임이 글자/그림을
+    새로 그리기 때문에 단순히 늘린 그림과 딱 맞지는 않음. 그래서 몇 가지 크기
+    (측정 때 그대로, 배율만큼, ±8%)로 대보고 가장 잘 맞는 크기를 씀.
+    """
     w = main_win()
     if w is None:
         return []
     img = shot_bgr(sct, w.left, w.top, w.width, w.height)
-    tpl = _sprites[key]
-    k = scale()
-    if abs(k - 1) > 0.03:
-        tpl = cv2.resize(tpl, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
     if binary:
         # 이름 글자: 밝은 글자 픽셀만 비교 (뒤 배경이 달라도 글자 모양으로 찾음)
         img = (cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) > 200).astype(np.float32)
-        tpl = (cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY) > 200).astype(np.float32)
-    th, tw = tpl.shape[:2]
-    if th >= img.shape[0] or tw >= img.shape[1]:
+    k = scale()
+    sizes = [_best_size[key]] if key in _best_size else []
+    sizes += [s for s in (k, 1.0, k * 0.92, k * 1.08) if all(abs(s - t) > 0.02 for t in sizes)]
+    best = None
+    for f in sizes:
+        tpl = _sprites[key]
+        if abs(f - 1) > 0.02:
+            tpl = cv2.resize(tpl, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+        if binary:
+            tpl = (cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY) > 200).astype(np.float32)
+        th, tw = tpl.shape[:2]
+        if th < 4 or tw < 4 or th >= img.shape[0] or tw >= img.shape[1]:
+            continue
+        res = cv2.matchTemplate(img, tpl, cv2.TM_CCOEFF_NORMED)
+        mx = float(res.max())
+        if best is None or mx > best[0]:
+            best = (mx, f, res, th, tw)
+        if mx >= 0.9:                  # 충분히 잘 맞으면 다른 크기는 안 봐도 됨
+            break
+    if best is None:
         return []
-    res = cv2.matchTemplate(img, tpl, cv2.TM_CCOEFF_NORMED)
+    mx, f, res, th, tw = best
+    if mx >= sure:
+        _best_size[key] = f
     rects = other_windows()
     out = []
     while len(out) < 40:
