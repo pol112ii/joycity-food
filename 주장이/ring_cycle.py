@@ -277,7 +277,13 @@ def double_click(pt):
 # ==================== ① 줍기 ====================
 
 def all_names():
-    return [n for n, _ in RECIPE] + list(SELL) + [FOOD]
+    """칸을 알아볼 때 비교할 이름 — items 폴더에 등록된 아이콘 전부.
+
+    반지 재료만 비교하면, 인벤토리에 섞인 다른 아이템(예: 하급키트)이 생김새가
+    비슷한 재료(상급키트)로 착각돼서 재료 칸에 들어갈 수 있음.
+    """
+    names = [n for n, _ in RECIPE] + list(SELL) + [FOOD]
+    return names + sorted(n for n in _tpl if n not in names)
 
 
 def ensure_item_window():
