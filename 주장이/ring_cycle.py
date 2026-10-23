@@ -56,6 +56,7 @@ CART_WAIT = 20                      # 고물소환 후 리어카맨이 나타나
 SPRITE_SURE = 0.62                  # 바닥 재료 그림 일치 기준 (0~1, 높을수록 엄격). 석분은 무더기끼리
                                     # 많이 겹쳐서 0.6대로 나옴 — 주운 뒤 아이템 창으로 확인하니 안전
 LABEL_SURE = 0.60                   # 리어카맨 이름 글자 일치 기준
+REUSE_SURE = 0.80                   # '이미 있는 리어카맨'으로 믿을 기준 (애매하면 새로 소환)
 PICK_TRIES = 6                      # 재료 한 무더기를 줍기 위해 눌러볼 최대 횟수
 
 running = False
@@ -327,13 +328,18 @@ def find_sprite(sct, key, sure, binary=False):
     if mx >= sure:
         _best_size[key] = f
     rects = other_windows()
+    # 아래 메뉴 줄과 그 밑 채팅창은 방이 아님 ("[알림] 리어카맨을 소환했어요!" 같은 글자를 착각함)
+    try:
+        floor_bottom = main_pt("item_icon")[1] - 30 * k
+    except Exception:
+        floor_bottom = w.top + w.height
     out = []
     while len(out) < 40:
         _, mx, _, (x, y) = cv2.minMaxLoc(res)
         if mx < sure:
             break
         cx, cy = w.left + x + tw / 2, w.top + y + th / 2
-        if not any(a <= cx < c and b <= cy < d for a, b, c, d in rects):
+        if cy < floor_bottom and not any(a <= cx < c and b <= cy < d for a, b, c, d in rects):
             out.append((int(cx), int(cy), float(mx)))
         res[max(0, y - th // 2):y + th // 2 + 1, max(0, x - tw // 2):x + tw // 2 + 1] = -1
     return out
@@ -629,7 +635,7 @@ def summon_cart(sct, bad=(), reuse=True):
     안 보일 때만(클릭이 씹혔을 때) 한 번 더 시도함.
     """
     if reuse:
-        old = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), _bad_carts)
+        old = _far(find_sprite(sct, "cart_label", REUSE_SURE, binary=True), _bad_carts)
         if old:
             print(f"  이미 있는 리어카맨 이름을 찾음 ({old[0][0]}, {old[0][1]}, 일치 {old[0][2]:.2f})")
             return old[0]                   # 이미 소환된 리어카맨이 있음
@@ -731,7 +737,7 @@ def sell_all(sct):
         pyautogui.mouseDown()
         time.sleep(random.uniform(0.05, 0.1))
         pyautogui.mouseUp()
-        print(f"  리어카맨 클릭 → ({tx}, {ty})")
+        print(f"  리어카맨 클릭 → ({tx}, {ty})  (이름 일치 {cart[2]:.2f})")
         if wait_title("sell", True, 3):
             break
         print("  되팔기 창이 안 뜸 → 다시")
