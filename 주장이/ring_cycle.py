@@ -530,13 +530,21 @@ def craft_all(sct):
             for n in got:
                 if n in plan:
                     plan.remove(n)
-            if plan and None not in slot_names(sct):
-                _short.add(plan[0])
             am._scan_cache = None
             if not close_craft(sct):
                 return -1
+            have = material_cells(sct)
+            out = [n for n, _ in RECIPE if have.get(n, 0) == 0]
+            fails += 1
+            if not out and fails < 2:
+                # 재료는 보이는데 넣기만 실패 → 바로 끝내지 말고 한 번 더 (팔러 가면 체력만 씀)
+                print(f"  재료를 다 못 넣음 (재료는 있음: {have}) → 제작 창 다시 열어서 한 번 더")
+                continue
+            short = out[0] if out else (plan[0] if plan else None)
+            if short:
+                _short.add(short)
             print(f"[만들기] 재료를 다 못 넣음 → {done}번 만들고 이번 바퀴 끝"
-                  + (f" (모자란 것: {plan[0]} → 다음 바퀴에 한 무더기 더 주움)" if plan else ""))
+                  + (f" (모자란 것: {short} → 다음 바퀴에 한 무더기 더 주움)" if short else ""))
             return done
         if not recipe_ok(sct):
             # 다른 재료가 들어감 → 제작 창을 닫았다가 다시 열어서 처음부터 넣음
@@ -789,6 +797,15 @@ def click_cart(sct, cart, body, extra=(0, 0)):
 
 def sell_all(sct):
     """아까비깡을 먹고, 리어카맨에게 결혼반지를 전부 팜. 팔 게 없으면 바로 True."""
+    got = [n for _, n in item_contents(sct)]
+    n_sell = sum(1 for n in got if n in SELL)
+    if n_sell == 0:
+        return True
+    free = got.count("")
+    if free >= MAX_ROUNDS + 1:
+        # 다음 한 바퀴(MAX_ROUNDS 번) 만들 자리가 남아 있으면 아직 안 팜 → 소환 횟수(체력) 아낌
+        print(f"[팔기] 반지 {n_sell}개 — 빈 칸 {free}개라 아직 자리 넉넉 → 다음에 팜")
+        return True
     eat_all(sct)
     n_sell = sum(1 for _, n in item_contents(sct) if n in SELL)
     if n_sell == 0:
