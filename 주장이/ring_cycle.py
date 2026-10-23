@@ -428,6 +428,66 @@ def pick_up(sct):
 
 # ==================== ② 만들기 ====================
 
+def slot_names(sct):
+    """제작 창 재료 칸에 지금 들어 있는 것 ['석분', None(모름), '' (빈 칸), ...]."""
+    am.apply_craft_layout()
+    names = all_names()
+    return [ident(sct, (int(am.SLOT1_CENTER[0] + i * am.SLOT_PITCH_X), int(am.SLOT1_CENTER[1])), names)
+            for i in range(NUM_SLOTS)]
+
+
+def recipe_ok(sct):
+    """재료 칸에 레시피와 다른 재료가 들어갔는지 확인. 다르면 False.
+
+    칸 그림을 못 알아본 것(None)은 틀렸다고 보지 않음 — 확실히 다른 재료로 읽힐 때만 False.
+    """
+    got = slot_names(sct)
+    want = {}
+    for n, c in RECIPE:
+        want[n] = want.get(n, 0) + c
+    have = {}
+    for n in got:
+        if n:
+            have[n] = have.get(n, 0) + 1
+    wrong = [n for n in have if have[n] > want.get(n, 0)]
+    if wrong:
+        print(f"  [재료 확인] 칸에 든 것: {got} → 레시피와 다름 ({', '.join(wrong)})")
+        return False
+    if None in got:
+        print(f"  [재료 확인] 칸에 든 것: {got} (못 알아본 칸은 그냥 진행)")
+    return True
+
+
+def find_red_close(sct, w):
+    """창 오른쪽 위 빨간 동그라미(닫기 버튼) 위치. 못 찾으면 None."""
+    bw, bh = min(160, w.width), min(70, w.height)
+    img = shot_bgr(sct, w.left + w.width - bw, w.top, bw, bh).astype(int)
+    b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
+    ys, xs = np.nonzero((r > 190) & (g < 120) & (b < 120))
+    if len(xs) < 20:
+        return None
+    return (int(w.left + w.width - bw + xs.mean()), int(w.top + ys.mean()))
+
+
+def close_craft(sct):
+    """제작 창을 빨간 버튼으로 닫음 (넣은 재료는 인벤토리로 돌아감)."""
+    w = am.find_win("craft")
+    if w is None:
+        return True
+    pt = find_red_close(sct, w)
+    if pt is None:
+        print("  [문제] 제작 창 빨간 닫기 버튼을 못 찾음")
+        return False
+    click_at(pt, jx=2, jy=2, label="제작 창 닫기")
+    for _ in range(16):
+        time.sleep(0.25)
+        if not am.craft_open(sct):
+            time.sleep(random.uniform(0.5, 0.9))
+            return True
+    print("  [문제] 제작 창이 안 닫힘")
+    return False
+
+
 def craft_all(sct):
     """재료가 떨어질 때까지 반지 만들기. 몇 번 했는지 반환 (-1 = 오류로 멈춤)."""
     am.RECIPE = list(RECIPE)
@@ -449,6 +509,15 @@ def craft_all(sct):
             fails += 1
             if fails >= 3:
                 print("[중단] 재료는 있는데 넣기가 계속 실패함")
+                return -1
+            continue
+        if not recipe_ok(sct):
+            # 다른 재료가 들어감 → 제작 창을 닫았다가 다시 열어서 처음부터 넣음
+            print("  → 제작 창을 닫고 다시 열어서 재료를 새로 넣음")
+            am._scan_cache = None
+            fails += 1
+            if not close_craft(sct) or fails >= 3:
+                print("[중단] 재료가 계속 잘못 들어감")
                 return -1
             continue
         if not am.press_start(sct):
