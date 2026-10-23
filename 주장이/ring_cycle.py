@@ -399,11 +399,18 @@ def material_cells(sct):
     return {n: got.count(n) for n in PILES}
 
 
+_short = set()          # 지난 만들기 때 모자랐던 재료 (칸은 있어도 개수가 모자람) → 한 무더기 더 주움
+
+
 def pick_up(sct):
     """바닥에서 모자란 무더기를 주움. 다 주웠으면 True."""
     have = material_cells(sct)
     print(f"[줍기] 지금 인벤토리: {have} / 필요: {PILES}")
-    for name, piles in PILES.items():
+    want = {n: (max(p, have.get(n, 0) + 1) if n in _short else p) for n, p in PILES.items()}
+    if _short:
+        print(f"  지난번에 모자랐던 것: {', '.join(sorted(_short))} → 한 무더기 더")
+        _short.clear()
+    for name, piles in want.items():
         while running and alive and have.get(name, 0) < piles:
             cands = find_sprite(sct, "spr_" + name, SPRITE_SURE)
             if not cands:
@@ -501,16 +508,31 @@ def craft_all(sct):
         am.JOB_BTN = main_pt("job_icon")
         if not am.open_furniture_window(sct):
             return -1
-        if not am.fill_slots(sct, tpl):
-            have = material_cells(sct)
-            if any(have.get(n, 0) == 0 for n, _ in RECIPE):
-                print(f"[만들기] 재료가 떨어짐 → {done}번 만들고 끝 (남은 칸: {have})")
-                return done
+        left = am.filled_slots(sct, NUM_SLOTS)
+        if left:
+            # 지난번에 넣다 만 재료가 칸에 남아 있음 → 그대로 넣으면 레시피가 틀어짐
+            print(f"  [재료 확인] 넣기 전인데 칸 {[i + 1 for i in left]} 에 재료가 남아 있음 → 제작 창 닫고 다시")
+            am._scan_cache = None
             fails += 1
-            if fails >= 3:
-                print("[중단] 재료는 있는데 넣기가 계속 실패함")
+            if not close_craft(sct) or fails >= 3:
+                print("[중단] 남은 재료가 안 빠짐")
                 return -1
             continue
+        if not am.fill_slots(sct, tpl):
+            # 넣다가 실패 → 이미 넣은 재료는 칸에 남음. 무엇이 모자랐는지 보고, 창을 닫아서 돌려받음
+            got = [n for n in slot_names(sct) if n]
+            plan = [n for n, c in RECIPE for _ in range(c)]
+            for n in got:
+                if n in plan:
+                    plan.remove(n)
+            if plan and None not in slot_names(sct):
+                _short.add(plan[0])
+            am._scan_cache = None
+            if not close_craft(sct):
+                return -1
+            print(f"[만들기] 재료를 다 못 넣음 → {done}번 만들고 이번 바퀴 끝"
+                  + (f" (모자란 것: {plan[0]} → 다음 바퀴에 한 무더기 더 주움)" if plan else ""))
+            return done
         if not recipe_ok(sct):
             # 다른 재료가 들어감 → 제작 창을 닫았다가 다시 열어서 처음부터 넣음
             print("  → 제작 창을 닫고 다시 열어서 재료를 새로 넣음")
@@ -779,7 +801,7 @@ def worker():
             alive = False
             return
         print(f"준비 완료 — 그림: {', '.join(_sprites)}  /  F8 로 시작")
-        cycle = 0
+        cycle = zero = 0
         with mss.mss() as sct:
             while alive:
                 if not running:
@@ -801,6 +823,11 @@ def worker():
                     running = False
                     print("⏸ 만들기 오류로 멈춤 — 확인 후 F8")
                     continue
+                zero = zero + 1 if n == 0 else 0
+                if zero >= 3:
+                    running = False
+                    zero = 0
+                    print("⏸ 3바퀴 연속 하나도 못 만들어서 멈춤 — 재료/화면 확인 후 F8")
     except pyautogui.FailSafeException:
         print("\n[비상정지] 마우스가 화면 구석으로 갔습니다. 완전히 종료합니다.")
         alive = False
