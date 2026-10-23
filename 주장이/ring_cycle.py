@@ -642,9 +642,13 @@ def summon_cart(sct, bad=(), reuse=True):
             return old[0]                   # 이미 소환된 리어카맨이 있음
     for attempt in range(2):
         if find_title(_layout["titles"]["ability"]) is None:
-            am.direct_click(main_pt("ability_icon"), "능력")
-            if not wait_title("ability", True, 5):
-                print("[문제] 능력 창이 안 열림")
+            for tries in range(3):              # 클릭이 씹힐 수 있어서 최대 3번 누름
+                am.direct_click(main_pt("ability_icon"), "능력")
+                if wait_title("ability", True, 3):
+                    break
+                print(f"  능력 창이 안 열림 → 다시 누름 ({tries + 2}번째)")
+            else:
+                print("[문제] 능력 창이 3번 눌러도 안 열림 — 아래 메뉴 능력(별) 아이콘 위치 확인")
                 return None
         if not ability_ready(sct):
             print("  (능력 창 내용이 늦게 뜸 — 그래도 눌러봄)")
