@@ -20,13 +20,15 @@ import time
 
 try:
     import mss
+    import cv2
+    import numpy as np
     import keyboard
     import pyautogui
     import pygetwindow as gw
     from PIL import Image
 except ImportError as e:
     print("[에러] 필요한 프로그램이 없습니다:", e)
-    print("cmd 에서:  py -m pip install mss numpy pyautogui keyboard pillow pygetwindow")
+    print("cmd 에서:  py -m pip install opencv-python mss numpy pyautogui keyboard pillow pygetwindow")
     input("\n엔터를 누르면 창이 닫힙니다...")
     sys.exit(1)
 
@@ -40,6 +42,7 @@ CRAFT_TITLE = "제작"
 #        win   : 따로 뜨는 창(능력 / 되팔기) 안의 위치 — 창 제목은 자동으로 기록
 #        box   : 그림 저장 (왼쪽 위, 오른쪽 아래 두 번)
 #        say   : 안내만 (아무 키나 F1)
+#        cart  : 리어카맨 몸통 — 그 순간 머리 위 이름 글자를 찾아 그림으로 저장
 STEPS = [
     ("say", "say", "제작 창과 방 화면이 보이게 해두세요. 준비됐으면 F1"),
     ("item_icon", "main", "아래 메뉴 맨 왼쪽 [아이템] 아이콘 (상자 모양) 가운데"),
@@ -57,8 +60,8 @@ STEPS = [
     ("spr_상급키트", "box", "바닥의 상급키트 무더기 하나 (안 가려진 것)"),
     ("say", "say", "능력 창에서 [고물소환]을 한 번 누르고, 빨간 버튼으로 능력 창을 닫은 뒤\n"
                    "   리어카맨이 나타나면 F1"),
-    ("cart_label", "box", "리어카맨 머리 위 이름 글자 ('...의 리어카맨' 전체를 감싸게)"),
-    ("cart_body", "main", "리어카맨 몸통 가운데 (봇이 클릭할 곳)"),
+    ("cart", "cart", "리어카맨 몸통 가운데 (봇이 클릭할 곳). 머리 위 이름 글자는 자동으로 찾아 저장함\n"
+                     "   ※ 리어카맨이 걸어 다니니까 몸통 위에 올라간 순간 바로 F1"),
     ("say", "say", "리어카맨을 직접 눌러서 '고물상 — 되팔기' 창을 띄우세요. 띄웠으면 F1"),
     ("sell_first", "win", "되팔기 창 '오른쪽'(내 인벤토리) 첫 칸 가운데"),
     ("sell_row1_last", "win", "되팔기 창 오른쪽 첫 줄 맨 오른쪽 칸 가운데"),
@@ -113,6 +116,36 @@ def craft_window():
         if norm(w.title) == norm(CRAFT_TITLE) and shown(w):
             return w
     return None
+
+
+def find_label_above(sct, x, y):
+    """(x, y) 위쪽(최대 140px)에서 흰 이름 글자 덩어리를 찾아 (그림, 사각형) 반환."""
+    left, top = x - 160, y - 140
+    shot = sct.grab({"left": left, "top": top, "width": 320, "height": 135})
+    bgr = np.asarray(shot)[:, :, :3]
+    mask = (cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY) > 200).astype(np.uint8)
+    merged = cv2.dilate(mask, np.ones((3, 9), np.uint8))       # 글자들을 한 덩어리로
+    n, _, stats, _ = cv2.connectedComponentsWithStats(merged)
+    best = None
+    for i in range(1, n):
+        bx, by, bw, bh, area = stats[i]
+        # 이름 글자 줄 모양만: 얇고 긴 줄 ('...의 리어카맨' 은 글자가 많아서 폭이 넓음).
+        # 리어카맨 그림의 흰 부분(눈, 목도리)은 뭉툭해서 여기서 걸러짐
+        if bw < 60 or bh < 7 or bh > 22 or bw < bh * 3:
+            continue
+        if not (bx <= 160 + 60 and bx + bw >= 160 - 60):        # 커서 근처 가로 범위
+            continue
+        dist = 135 - (by + bh)                                  # 커서에 가까운(아래쪽) 것 우선
+        if best is None or dist < best[0]:
+            best = (dist, bx, by, bw, bh)
+    if best is None:
+        return None
+    _, bx, by, bw, bh = best
+    x0, y0 = left + bx - 2, top + by - 2
+    x1, y1 = left + bx + bw + 2, top + by + bh + 2
+    crop = sct.grab({"left": x0, "top": y0, "width": x1 - x0, "height": y1 - y0})
+    img = Image.frombytes("RGB", crop.size, crop.bgra, "raw", "BGRX")
+    return img, (x0, y0, x1, y1)
 
 
 def wait_key():
@@ -187,6 +220,23 @@ def main():
             data["sprites"][name] = {"file": fn, "w": x1 - x0, "h": y1 - y0,
                                      "cx": (x0 + x1) / 2, "cy": (y0 + y1) / 2}
             print(f"   저장: ring_sprites/{fn}  ({x1 - x0}x{y1 - y0})")
+            i += 1
+            continue
+
+        if kind == "cart":
+            with mss.mss() as sct:
+                lab = find_label_above(sct, x, y)
+            if lab is None:
+                print("   [다시] 몸통 위쪽에서 흰 이름 글자를 못 찾았어요. 몸통 가운데에서 다시 F1")
+                continue
+            img, (x0, y0, x1, y1) = lab
+            img.save(os.path.join(SPRITE_DIR, "cart_label.png"))
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            data["sprites"]["cart_label"] = {"file": "cart_label.png", "w": x1 - x0, "h": y1 - y0,
+                                             "cx": cx, "cy": cy}
+            data["points"]["cart_body"] = {"off_x": x - cx, "off_y": y - cy, "x": x, "y": y}
+            print(f"   저장: ring_sprites/cart_label.png ({x1 - x0}x{y1 - y0}), "
+                  f"글자 → 몸통 거리 ({x - cx:.0f}, {y - cy:.0f})")
             i += 1
             continue
 
