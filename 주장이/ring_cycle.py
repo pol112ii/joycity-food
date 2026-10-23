@@ -4,8 +4,8 @@
 
   ① 방 바닥에서 재료 줍기 (석분 2무더기, 철괴 1무더기, 상급키트 1무더기)
   ② 주장이 봇(auto_match.py)으로 결혼반지 만들기 — 재료가 떨어질 때까지
-  ③ 체력이 모자라면 아까비깡을 더블클릭해서 먹기
-  ④ 능력 → 고물소환 → 리어카맨 클릭 → 결혼반지/아까비깡 팔기 → 닫기
+  ③ 아이템 창에서 아까비깡을 전부 더블클릭해서 먹기 (체력 보충 — 하나에 100)
+  ④ 능력 → 고물소환 → 리어카맨 클릭 → 결혼반지 팔기 → 닫기
   ⑤ ①로
 
 auto_match.py 는 고치지 않고 그대로 불러다 씀 (이 파일이 실행할 때만 설정을 바꿈).
@@ -49,14 +49,12 @@ SPRITE_DIR = os.path.join(HERE, "ring_sprites")
 RECIPE = [("석분", 2), ("철괴", 1), ("상급키트", 1)]   # 반지 1번에 넣는 재료
 NUM_SLOTS = 4                       # 제작 창에 열려 있는 재료 칸 수
 PILES = {"석분": 2, "철괴": 1, "상급키트": 1}         # 한 바퀴에 주울 무더기 수 (한 무더기 20개)
-SELL = ("결혼반지", "아까비깡")      # 리어카맨에게 팔 것
-FOOD = "아까비깡"                    # 체력이 모자랄 때 더블클릭해서 먹을 것
-SUMMON_HP = 100                     # 고물소환에 드는 체력
-HP_EAT_BELOW = 0.20                 # HP 막대가 이 비율보다 적으면 먹음 (0.20 = 20%)
-HP_EAT_UNTIL = 0.50                 # 먹기 시작하면 이 비율까지 채움 (아까비깡이 있는 만큼)
+SELL = ("결혼반지",)                 # 리어카맨에게 팔 것
+FOOD = "아까비깡"                    # 팔기 전에 아이템 창에서 전부 더블클릭해서 먹을 것
 MAX_ROUNDS = 25                     # 한 바퀴에 만들기 최대 횟수 (보통 20번에 재료가 떨어짐)
 CART_WAIT = 20                      # 고물소환 후 리어카맨이 나타나길 기다리는 시간(초)
-SPRITE_SURE = 0.72                  # 바닥 재료 그림 일치 기준 (0~1, 높을수록 엄격)
+SPRITE_SURE = 0.62                  # 바닥 재료 그림 일치 기준 (0~1, 높을수록 엄격). 석분은 무더기끼리
+                                    # 많이 겹쳐서 0.6대로 나옴 — 주운 뒤 아이템 창으로 확인하니 안전
 LABEL_SURE = 0.60                   # 리어카맨 이름 글자 일치 기준
 PICK_TRIES = 6                      # 재료 한 무더기를 줍기 위해 눌러볼 최대 횟수
 
@@ -84,7 +82,7 @@ def load():
         print("[중단] match_layout.json 이 없어요 — 주장이 봇 준비(사용법.txt 4번)부터")
         return False
     _tpl = am.load_templates()
-    need = {n for n, _ in RECIPE} | set(SELL)
+    need = {n for n, _ in RECIPE} | set(SELL) | {FOOD}
     missing = need - _tpl.keys()
     if missing:
         print(f"[중단] items 폴더에 아이콘이 없는 것: {', '.join(sorted(missing))}")
@@ -132,15 +130,12 @@ def _layout_title(kind):
 
 
 def main_pt(name):
-    """메인 창의 고정 위치 — 아래 메뉴는 왼쪽 아래 기준, HP 막대는 오른쪽 아래 기준."""
+    """메인 창의 고정 위치 (아래 메뉴 아이콘) — 창 왼쪽 아래 기준."""
     w = main_win()
     p = _layout["points"][name]
     k = scale()
     y = w.top + w.height - p["dy_bottom"] * k
-    if name.startswith("hp_"):
-        x = w.left + w.width - p["dx_right"] * k
-    else:
-        x = w.left + p["dx_left"] * k
+    x = w.left + p["dx_left"] * k
     return int(round(x)), int(round(y))
 
 
@@ -176,18 +171,6 @@ def wait_title(kind, shown=True, timeout=5.0):
 def shot_bgr(sct, left, top, w, h):
     s = sct.grab({"left": int(left), "top": int(top), "width": int(w), "height": int(h)})
     return np.asarray(s)[:, :, :3].copy()
-
-
-def hp_ratio(sct):
-    """HP(체력) 막대가 얼마나 찼는지 0~1. 빨간 부분의 오른쪽 끝으로 계산."""
-    (x0, y0), (x1, _) = main_pt("hp_left"), main_pt("hp_right")
-    if x1 <= x0:
-        return None
-    img = shot_bgr(sct, x0, y0 - 1, x1 - x0, 3).astype(int)
-    B, G, R = img[:, :, 0], img[:, :, 1], img[:, :, 2]
-    red = ((R > 140) & (G < 100) & (B < 100)).any(axis=0)
-    xs = np.flatnonzero(red)
-    return 0.0 if xs.size == 0 else (xs[-1] + 1) / (x1 - x0)
 
 
 def ident(sct, pos, names):
@@ -267,12 +250,37 @@ def double_click(pt):
 
 # ==================== ① 줍기 ====================
 
+def all_names():
+    return [n for n, _ in RECIPE] + list(SELL) + [FOOD]
+
+
+def ensure_item_window():
+    """아이템 창이 안 떠 있으면 아래 메뉴 [아이템] 아이콘으로 엶."""
+    if find_title(_layout["titles"]["item"]) is not None:
+        return True
+    am.direct_click(main_pt("item_icon"), "아이템")
+    return wait_title("item", True, 4)
+
+
+def item_contents(sct):
+    """아이템 창 30칸의 내용 [(칸 중심, 이름), ...]  ('' = 빈 칸, None = 모르는 것)."""
+    if not ensure_item_window():
+        print("  [주의] 아이템 창이 안 열림")
+        return []
+    cells = grid("item")
+    mx, my = pyautogui.position()
+    w = find_title(_layout["titles"]["item"])
+    if w is not None and w.left <= mx < w.left + w.width and w.top <= my < w.top + w.height:
+        # 커서가 칸을 가리면 잘못 읽으니 아이템 창 밖으로 살짝 비켜둠
+        am.smooth_move_to(w.left - random.randint(30, 80), my, random.uniform(0.2, 0.35), bow=6)
+    names = all_names()
+    return [(pos, ident(sct, pos, names)) for pos in cells]
+
+
 def material_cells(sct):
-    """제작 창 인벤토리에서 재료별 칸 수."""
-    am.apply_craft_layout()
-    names = {n for n, _ in RECIPE} | set(SELL)
-    found, _ = am.scan_inventory(sct, {n: _tpl[n] for n in names if n in _tpl})
-    return {n: len(found.get(n, [])) for n in PILES}
+    """아이템 창에서 재료별 칸 수."""
+    got = [n for _, n in item_contents(sct)]
+    return {n: got.count(n) for n in PILES}
 
 
 def pick_up(sct):
@@ -311,7 +319,7 @@ def craft_all(sct):
     am.JOB_KEY = None                     # F2 가 안 먹어서 아래 메뉴 직업 아이콘을 누름
     am.JOB_BTN = main_pt("job_icon")
     am._scan_cache = None
-    tpl = {n: _tpl[n] for n in ({n for n, _ in RECIPE} | set(SELL)) if n in _tpl}
+    tpl = {n: _tpl[n] for n in all_names() if n in _tpl}   # 반지/아까비깡도 알아야 재료로 착각 안 함
     done = fails = 0
     while running and alive and done < MAX_ROUNDS:
         am.JOB_BTN = main_pt("job_icon")
@@ -347,27 +355,21 @@ def craft_all(sct):
 
 # ==================== ③ 먹기 / ④ 팔기 ====================
 
-def eat_if_needed(sct):
-    """체력이 모자라면 아이템 창에서 아까비깡을 더블클릭해서 먹음."""
-    hp = hp_ratio(sct)
-    if hp is None or hp >= HP_EAT_BELOW:
-        return
-    cells = grid("item")
-    if cells is None:
-        print("  [주의] 아이템 창이 안 보여서 아까비깡을 못 먹음 — 아이템 창을 띄워 두세요")
-        return
-    print(f"[먹기] 체력 {hp*100:.0f}% → 아까비깡 먹기")
-    for pos in cells:
-        if not (running and alive):
-            return
-        if ident(sct, pos, [FOOD] + list(SELL) + [n for n, _ in RECIPE]) != FOOD:
-            continue
-        double_click(pos)
-        time.sleep(random.uniform(0.8, 1.2))
-        hp = hp_ratio(sct)
-        print(f"  먹음 → 체력 {hp*100:.0f}%")
-        if hp is not None and hp >= HP_EAT_UNTIL:
-            return
+def eat_all(sct):
+    """아이템 창에서 아까비깡을 전부 더블클릭해서 먹음 (체력 보충)."""
+    eaten = 0
+    for _ in range(3):                      # 먹고 나면 칸이 당겨질 수 있어서 다시 확인
+        foods = [pos for pos, n in item_contents(sct) if n == FOOD]
+        if not foods:
+            break
+        for pos in foods:
+            if not (running and alive):
+                return
+            double_click(pos)
+            eaten += 1
+            time.sleep(random.uniform(0.5, 0.8))
+    if eaten:
+        print(f"[먹기] 아까비깡 {eaten}개 먹음")
 
 
 def summon_cart(sct):
@@ -379,7 +381,7 @@ def summon_cart(sct):
     if not wait_title("ability", True, 5):
         print("[문제] 능력 창이 안 열림")
         return None
-    time.sleep(random.uniform(0.4, 0.7))
+    time.sleep(random.uniform(0.8, 1.1))      # 능력 창은 열릴 때 잠깐 빈 화면이 먼저 나옴
     click_at(win_pt("summon"), jx=20, jy=3, label="고물소환")
     time.sleep(random.uniform(0.6, 1.0))
     click_at(win_pt("ability_close"), jx=1, jy=1, label="능력 창 닫기")
@@ -390,30 +392,42 @@ def summon_cart(sct):
         if found:
             return found[0]
         time.sleep(0.5)
-    print(f"[문제] 고물소환 후 {CART_WAIT}초 동안 리어카맨이 안 보임")
+    print(f"[문제] 고물소환 후 {CART_WAIT}초 동안 리어카맨이 안 보임 (체력 부족일 수 있음)")
     return None
 
 
 def sell_all(sct):
-    """리어카맨에게 결혼반지/아까비깡을 전부 팜. 팔 게 없으면 바로 True."""
-    am.apply_craft_layout()
-    names = list(SELL) + [n for n, _ in RECIPE]
-    found, _ = am.scan_inventory(sct, {n: _tpl[n] for n in names if n in _tpl})
-    n_sell = sum(len(found.get(n, [])) for n in SELL)
+    """아까비깡을 먹고, 리어카맨에게 결혼반지를 전부 팜. 팔 게 없으면 바로 True."""
+    eat_all(sct)
+    n_sell = sum(1 for _, n in item_contents(sct) if n in SELL)
     if n_sell == 0:
         return True
     print(f"[팔기] 팔 것 {n_sell}개")
-    eat_if_needed(sct)
+    names = all_names()
     cart = summon_cart(sct)
     if cart is None:
         return False
     off = _layout["points"]["cart_body"]
     k = scale()
-    for attempt in range(3):
-        cx, cy, _ = cart
-        click_at((int(cx + off["off_x"] * k), int(cy + off["off_y"] * k)), jx=4, jy=4,
-                 label="리어카맨")
-        if wait_title("sell", True, 4):
+
+    def body(c):
+        return int(c[0] + off["off_x"] * k), int(c[1] + off["off_y"] * k)
+
+    for attempt in range(5):
+        # 리어카맨은 계속 걸어 다님 → 다가간 뒤 한 번 더 찾아서 그 자리를 누름
+        tx, ty = body(cart)
+        am.smooth_move_to(tx, ty, random.uniform(0.25, 0.4) * am.MOUSE_SPEED, bow=8)
+        again = find_sprite(sct, "cart_label", LABEL_SURE, binary=True)
+        if again:
+            cart = min(again, key=lambda c: (c[0] - cart[0]) ** 2 + (c[1] - cart[1]) ** 2)
+            tx, ty = body(cart)
+            am.smooth_move_to(tx, ty, random.uniform(0.05, 0.1), bow=0)
+        time.sleep(random.uniform(0.05, 0.1))
+        pyautogui.mouseDown()
+        time.sleep(random.uniform(0.05, 0.1))
+        pyautogui.mouseUp()
+        print(f"  리어카맨 클릭 → ({tx}, {ty})")
+        if wait_title("sell", True, 3):
             break
         print("  되팔기 창이 안 뜸 → 다시")
         again = find_sprite(sct, "cart_label", LABEL_SURE, binary=True)
@@ -432,6 +446,11 @@ def sell_all(sct):
             click_at(pos, jx=4, jy=4)
             clicked += 1
             time.sleep(random.uniform(0.25, 0.45))
+    if clicked == 0:
+        # 아이템 창엔 반지가 있는데 되팔기 창에서 못 알아봄 → 계속 소환하면 체력만 닳으니 멈춤
+        print("[문제] 되팔기 창에서 결혼반지를 못 알아봄 — 칸 위치(measure_ring.py)를 확인하세요")
+        click_at(win_pt("sell_close"), jx=8, jy=3, label="닫기")
+        return False
     print(f"  {clicked}개 올림 → 팔기")
     time.sleep(random.uniform(0.3, 0.6))
     click_at(win_pt("sell_btn"), jx=10, jy=3, label="팔기")

@@ -42,11 +42,10 @@ CRAFT_TITLE = "제작"
 #        say   : 안내만 (아무 키나 F1)
 STEPS = [
     ("say", "say", "제작 창과 방 화면이 보이게 해두세요. 준비됐으면 F1"),
+    ("item_icon", "main", "아래 메뉴 맨 왼쪽 [아이템] 아이콘 (상자 모양) 가운데"),
     ("job_icon", "main", "아래 메뉴의 [직업] 아이콘 (가방 모양) 가운데"),
     ("ability_icon", "main", "아래 메뉴의 [능력] 아이콘 (별 모양) 가운데"),
-    ("hp_left", "main", "오른쪽 아래 빨간 HP 막대의 왼쪽 끝"),
-    ("hp_right", "main", "HP 막대의 오른쪽 끝 (빈 부분까지 포함한 막대 맨 끝)"),
-    ("say", "say", "아이템 창(가방)을 띄워 두세요 — 아까비깡을 더블클릭해서 먹을 곳. 띄웠으면 F1"),
+    ("say", "say", "아이템 창을 띄워 두세요 (아까비깡을 먹고, 주운 재료를 확인하는 곳). 띄웠으면 F1"),
     ("item_first", "win", "아이템 창 첫 칸(왼쪽 위) 가운데"),
     ("item_row1_last", "win", "아이템 창 첫 줄 맨 오른쪽 칸 가운데"),
     ("item_row5_first", "win", "아이템 창 맨 아래 줄(5번째 줄) 첫 칸 가운데"),
@@ -233,7 +232,6 @@ def main():
           f"  (둘이 거의 같아야 정상)")
     print(f"   아이템 칸 간격: 가로 {(p['item_row1_last']['dx'] - p['item_first']['dx']) / 5:.1f}"
           f" / 세로 {(p['item_row5_first']['dy'] - p['item_first']['dy']) / 4:.1f}")
-    print(f"   HP 막대 길이: {p['hp_right']['x'] - p['hp_left']['x']}")
     print(f"   그림: {', '.join(v['file'] for v in data['sprites'].values())}")
     data["saved_at"] = time.strftime("%Y-%m-%d %H:%M")
     with open(OUT, "w", encoding="utf-8") as f:
