@@ -620,6 +620,7 @@ def ability_ready(sct, timeout=4.0):
     return False
 
 
+_seen = []                      # [마지막으로 찾은 리어카맨 위치, 그때 시각]
 _bad_carts = []                 # 눌러도 되팔기 창이 안 열리던 리어카맨 자리 (다음 바퀴에도 기억)
 
 
@@ -655,8 +656,9 @@ def summon_cart(sct, bad=(), reuse=True):
         while running and alive and time.time() - t0 < CART_WAIT:
             found = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), bad)
             if found:
+                _seen[:] = [found[0], time.time()]
                 return found[0]
-            time.sleep(0.5)
+            time.sleep(0.1)
         if attempt == 0:
             print(f"  고물소환 후 {CART_WAIT}초 동안 리어카맨이 안 보임 → 한 번 더 소환")
     print("[문제] 리어카맨이 안 나타남 (체력 부족이거나 이름 글자 그림이 안 맞음)")
@@ -704,6 +706,74 @@ def save_sell_debug(sct, w, cells, names):
         print("  (디버그 저장 실패:", e, ")")
 
 
+def locate_near(sct, c, radius):
+    """c 근처(±radius)에서만 리어카맨 이름을 빨리 찾음 → (x, y, 점수) 또는 None."""
+    w = main_win()
+    if w is None or "cart_label" not in _sprites:
+        return None
+    f = _best_size.get("cart_label", scale())
+    tpl = _sprites["cart_label"]
+    if abs(f - 1) > 0.02:
+        tpl = cv2.resize(tpl, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    tpl = (cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY) > 200).astype(np.float32)
+    th, tw = tpl.shape[:2]
+    try:
+        bottom = main_pt("item_icon")[1] - 30 * scale()
+    except Exception:
+        bottom = w.top + w.height
+    l = max(w.left, int(c[0] - radius - tw / 2))
+    t = max(w.top, int(c[1] - radius - th / 2))
+    r = min(w.left + w.width, int(c[0] + radius + tw / 2))
+    b = min(int(bottom), int(c[1] + radius + th / 2))
+    if r - l <= tw or b - t <= th:
+        return None
+    img = (cv2.cvtColor(shot_bgr(sct, l, t, r - l, b - t), cv2.COLOR_BGR2GRAY) > 200).astype(np.float32)
+    res = cv2.matchTemplate(img, tpl, cv2.TM_CCOEFF_NORMED)
+    _, mx, _, (x, y) = cv2.minMaxLoc(res)
+    if mx < LABEL_SURE:
+        return None
+    return (int(l + x + tw / 2), int(t + y + th / 2), float(mx))
+
+
+def click_cart(sct, cart, body):
+    """걸어 다니는 리어카맨을 누름.
+
+    잠깐 사이에 두 번 위치를 재서 걷는 속도/방향을 구하고, 마우스가 도착할
+    때쯤 있을 자리를 미리 계산해서 한 번에 부드럽게 가서 누름.
+    (따라가며 여러 번 고치는 것보다 자연스럽고 잘 맞음)
+    """
+    if _seen and _seen[0] == cart and time.time() - _seen[1] < 1.0:
+        p1, t1 = cart, _seen[1]             # 방금 찾은 위치를 첫 번째로 씀 → 기다릴 필요 없음
+    else:
+        p1 = locate_near(sct, cart, 250) or cart
+        t1 = time.time()
+        time.sleep(0.08)
+    p2 = locate_near(sct, p1, 120) or p1
+    t2 = time.time()
+    vx, vy = (p2[0] - p1[0]) / (t2 - t1), (p2[1] - p1[1]) / (t2 - t1)
+    if (vx * vx + vy * vy) ** 0.5 > 600:        # 엉뚱한 걸 잡았으면 속도는 무시
+        vx = vy = 0.0
+    d = random.uniform(0.22, 0.32)
+    lead = (time.time() - t2) + d + 0.08
+    bx, by = body(p2)
+    tx, ty = int(bx + vx * lead), int(by + vy * lead)
+    am.smooth_move_to(tx, ty, d, bow=6)
+    # 도착해서 한 번 더 확인 — 예상보다 많이 어긋났으면(벽에서 방향을 틀었을 때 등) 살짝 고침
+    p3 = locate_near(sct, p2, 120)
+    if p3:
+        nx, ny = body(p3)
+        nx, ny = int(nx + vx * 0.06), int(ny + vy * 0.06)
+        if abs(nx - tx) > 18 or abs(ny - ty) > 18:
+            am.smooth_move_to(nx, ny, random.uniform(0.05, 0.08), bow=0)
+            tx, ty = nx, ny
+        p2 = p3
+    time.sleep(random.uniform(0.02, 0.05))
+    pyautogui.mouseDown()
+    time.sleep(random.uniform(0.04, 0.08))
+    pyautogui.mouseUp()
+    return tx, ty, p2
+
+
 def sell_all(sct):
     """아까비깡을 먹고, 리어카맨에게 결혼반지를 전부 팜. 팔 게 없으면 바로 True."""
     eat_all(sct)
@@ -725,18 +795,7 @@ def sell_all(sct):
         return int(c[0] + off["off_x"] * k), int(c[1] + off["off_y"] * k)
 
     for attempt in range(5):
-        # 리어카맨은 계속 걸어 다님 → 다가간 뒤 한 번 더 찾아서 그 자리를 누름
-        tx, ty = body(cart)
-        am.smooth_move_to(tx, ty, random.uniform(0.25, 0.4) * am.MOUSE_SPEED, bow=8)
-        again = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), bad)
-        if again:
-            cart = min(again, key=lambda c: (c[0] - cart[0]) ** 2 + (c[1] - cart[1]) ** 2)
-            tx, ty = body(cart)
-            am.smooth_move_to(tx, ty, random.uniform(0.05, 0.1), bow=0)
-        time.sleep(random.uniform(0.05, 0.1))
-        pyautogui.mouseDown()
-        time.sleep(random.uniform(0.05, 0.1))
-        pyautogui.mouseUp()
+        tx, ty, cart = click_cart(sct, cart, body)
         print(f"  리어카맨 클릭 → ({tx}, {ty})  (이름 일치 {cart[2]:.2f})")
         if wait_title("sell", True, 3):
             break
