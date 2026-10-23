@@ -189,8 +189,53 @@ def grid(prefix):
     if None in (a, b, c):
         return None
     px, py = (b[0] - a[0]) / 5, (c[1] - a[1]) / 4
-    return [(int(round(a[0] + col * px)), int(round(a[1] + row * py)))
-            for row in range(5) for col in range(6)]
+    pts = [(int(round(a[0] + col * px)), int(round(a[1] + row * py)))
+           for row in range(5) for col in range(6)]
+    return snap_grid(pts, px, py)
+
+
+def snap_grid(pts, px, py):
+    """찍은 자리가 몇 픽셀 어긋났어도 실제 칸 가운데로 맞춤.
+
+    빈 칸은 속이 새까만 네모라서, 각 빈 칸에서 '까만 네모가 통째로 들어가는 자리'의
+    가운데를 찾고, 그걸로 줄/열 위치를 다시 계산함. (빈 칸이 모자라면 그대로 씀)
+    """
+    try:
+        pitch = min(abs(px), abs(py))
+        h = int(pitch * 0.36)              # 까만 속 네모의 반 크기 (테두리 안쪽)
+        r = int(pitch * 0.3)               # 이만큼까지 어긋난 건 맞춰줌
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        left, top = min(xs) - h - r, min(ys) - h - r
+        w, hh = max(xs) - min(xs) + 2 * (h + r) + 1, max(ys) - min(ys) + 2 * (h + r) + 1
+        with mss.mss() as sct:
+            img = shot_bgr(sct, left, top, w, hh)
+        bright = (img.astype(int).sum(axis=2) > 60).astype(np.int32)
+        ii = np.pad(bright.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
+        fits = []                           # (열, 줄, 실제 x, 실제 y)
+        for i, (x, y) in enumerate(pts):
+            x, y = x - left, y - top
+            ok = []
+            for dy in range(-r, r + 1):
+                for dx in range(-r, r + 1):
+                    y0, y1, x0, x1 = y + dy - h, y + dy + h + 1, x + dx - h, x + dx + h + 1
+                    if ii[y1, x1] - ii[y0, x1] - ii[y1, x0] + ii[y0, x0] == 0:
+                        ok.append((dx, dy))
+            if ok:
+                dxs, dys = [o[0] for o in ok], [o[1] for o in ok]
+                fits.append((i % 6, i // 6, x + (min(dxs) + max(dxs)) / 2 + left,
+                             y + (min(dys) + max(dys)) / 2 + top))
+        if len({f[0] for f in fits}) < 2 or len({f[1] for f in fits}) < 2:
+            return pts
+        cx = np.polyfit([f[0] for f in fits], [f[2] for f in fits], 1)
+        cy = np.polyfit([f[1] for f in fits], [f[3] for f in fits], 1)
+        new = [(int(round(np.polyval(cx, i % 6))), int(round(np.polyval(cy, i // 6))))
+               for i in range(len(pts))]
+        if max(max(abs(n[0] - p[0]), abs(n[1] - p[1])) for n, p in zip(new, pts)) > r + 2:
+            return pts
+        return new
+    except Exception:
+        return pts
 
 
 def wait_title(kind, shown=True, timeout=5.0):
