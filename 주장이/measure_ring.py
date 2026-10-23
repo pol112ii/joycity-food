@@ -103,6 +103,8 @@ def top_window_at(x, y):
 def main_window():
     """게임 메인 창(제목에 '조이톡'). 가장 큰 것."""
     ws = [w for w in gw.getAllWindows() if "조이톡" in str(w.title) and shown(w)]
+    exact = [w for w in ws if norm(w.title) == "조이톡"]     # 브라우저 탭 제목 등은 제외
+    ws = exact or ws
     return max(ws, key=lambda w: w.width * w.height) if ws else None
 
 

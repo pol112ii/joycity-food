@@ -111,9 +111,13 @@ def find_title(title):
     return None
 
 
+def _is_main(w):
+    """게임 메인 창인지 — 측정 때 기록한 제목과 똑같아야 함 (브라우저 탭 제목 등과 구별)."""
+    return _norm(w.title) == _norm(_layout["titles"]["main"])
+
+
 def main_win():
-    ws = [w for w in am._gw.getAllWindows()
-          if "조이톡" in str(w.title) and am._really_shown(w)]
+    ws = [w for w in am._gw.getAllWindows() if _is_main(w) and am._really_shown(w)]
     return max(ws, key=lambda w: w.width * w.height) if ws else None
 
 
@@ -189,11 +193,17 @@ def ident(sct, pos, names):
 
 
 def other_windows():
-    """메인 창 위에 떠 있는 게임 창들의 사각형 (그 안에서 찾은 건 바닥 그림이 아님)."""
+    """메인 창 '위에' 떠 있는 창들의 사각형 (그 안에서 찾은 건 바닥 그림이 아님).
+
+    창 목록은 화면 맨 위 창부터 나오므로, 게임 메인 창이 나오기 전까지만 셈.
+    (게임 뒤에 깔린 브라우저 같은 창까지 세면 방 전체를 가린 걸로 오해함)
+    """
     rects = []
     for w in am._gw.getAllWindows():
         t = str(w.title)
-        if t.strip() and "조이톡" not in t and am._really_shown(w):
+        if _is_main(w):
+            break
+        if t.strip() and am._really_shown(w):
             rects.append((w.left, w.top, w.left + w.width, w.top + w.height))
     return rects
 
@@ -387,27 +397,56 @@ def eat_all(sct):
         print(f"[먹기] 아까비깡 {eaten}개 먹음")
 
 
+def ability_ready(sct, timeout=4.0):
+    """능력 창이 '다 그려질' 때까지 기다림.
+
+    능력 창은 열릴 때 잠깐 빈 판만 보이는데, 그때 누른 고물소환은 무시됨
+    (영상으로 확인). 고물소환 줄에 아이콘/글자가 그려져서 무늬가 생기면 준비 끝.
+    """
+    t0 = time.time()
+    while time.time() - t0 < timeout and running and alive:
+        pt = win_pt("summon")
+        if pt is not None:
+            k = scale()
+            hw, hh = int(60 * k), int(12 * k)
+            img = shot_bgr(sct, pt[0] - hw, pt[1] - hh, hw * 2, hh * 2)
+            if cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).std() > 12:
+                time.sleep(random.uniform(0.2, 0.4))
+                return True
+        time.sleep(0.1)
+    return False
+
+
 def summon_cart(sct):
-    """능력 → 고물소환 (딱 한 번) → 능력 창 닫기 → 리어카맨이 나타나면 위치 반환."""
+    """능력 → 고물소환 → 능력 창 닫기 → 리어카맨이 나타나면 위치 반환.
+
+    고물소환은 누를 때마다 한 명씩 생기므로 한 번만 누르고, 리어카맨이 한참
+    안 보일 때만(클릭이 씹혔을 때) 한 번 더 시도함.
+    """
     old = find_sprite(sct, "cart_label", LABEL_SURE, binary=True)
     if old:
         return old[0]                       # 이미 소환된 리어카맨이 있음
-    am.direct_click(main_pt("ability_icon"), "능력")
-    if not wait_title("ability", True, 5):
-        print("[문제] 능력 창이 안 열림")
-        return None
-    time.sleep(random.uniform(0.8, 1.1))      # 능력 창은 열릴 때 잠깐 빈 화면이 먼저 나옴
-    click_at(win_pt("summon"), jx=20, jy=3, label="고물소환")
-    time.sleep(random.uniform(0.6, 1.0))
-    click_at(win_pt("ability_close"), jx=1, jy=1, label="능력 창 닫기")
-    wait_title("ability", False, 3)
-    t0 = time.time()
-    while running and alive and time.time() - t0 < CART_WAIT:
-        found = find_sprite(sct, "cart_label", LABEL_SURE, binary=True)
-        if found:
-            return found[0]
-        time.sleep(0.5)
-    print(f"[문제] 고물소환 후 {CART_WAIT}초 동안 리어카맨이 안 보임 (체력 부족일 수 있음)")
+    for attempt in range(2):
+        if find_title(_layout["titles"]["ability"]) is None:
+            am.direct_click(main_pt("ability_icon"), "능력")
+            if not wait_title("ability", True, 5):
+                print("[문제] 능력 창이 안 열림")
+                return None
+        if not ability_ready(sct):
+            print("  (능력 창 내용이 늦게 뜸 — 그래도 눌러봄)")
+        click_at(win_pt("summon"), jx=20, jy=3, label="고물소환")
+        time.sleep(random.uniform(0.6, 1.0))
+        click_at(win_pt("ability_close"), jx=1, jy=1, label="능력 창 닫기")
+        wait_title("ability", False, 3)
+        t0 = time.time()
+        while running and alive and time.time() - t0 < CART_WAIT:
+            found = find_sprite(sct, "cart_label", LABEL_SURE, binary=True)
+            if found:
+                return found[0]
+            time.sleep(0.5)
+        if attempt == 0:
+            print(f"  고물소환 후 {CART_WAIT}초 동안 리어카맨이 안 보임 → 한 번 더 소환")
+    print("[문제] 리어카맨이 안 나타남 (체력 부족이거나 이름 글자 그림이 안 맞음)")
     return None
 
 
