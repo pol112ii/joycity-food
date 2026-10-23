@@ -356,18 +356,33 @@ def craft_all(sct):
 # ==================== ③ 먹기 / ④ 팔기 ====================
 
 def eat_all(sct):
-    """아이템 창에서 아까비깡을 전부 더블클릭해서 먹음 (체력 보충)."""
+    """아이템 창에서 아까비깡을 전부 더블클릭해서 먹음 (체력 보충).
+
+    아까비깡은 한 칸에 여러 개 쌓이므로(예: 3), 한 칸을 그 칸이 빌 때까지 계속
+    더블클릭함. 먹을 때마다 커서를 옆 칸으로 살짝 비켜서 그 칸을 다시 확인
+    (커서가 칸을 덮고 있으면 아이콘을 잘못 읽음).
+    """
     eaten = 0
+    names = all_names()
     for _ in range(3):                      # 먹고 나면 칸이 당겨질 수 있어서 다시 확인
+        cells = grid("item")
         foods = [pos for pos, n in item_contents(sct) if n == FOOD]
-        if not foods:
+        if not foods or cells is None:
             break
+        pitch = max(cells[1][0] - cells[0][0], 20)
         for pos in foods:
-            if not (running and alive):
-                return
-            double_click(pos)
-            eaten += 1
-            time.sleep(random.uniform(0.5, 0.8))
+            for _ in range(40):             # 한 칸 최대 40개까지
+                if not (running and alive):
+                    return
+                double_click(pos)
+                eaten += 1
+                time.sleep(random.uniform(0.5, 0.8))
+                side = -pitch if pos[0] - pitch > cells[0][0] - pitch / 2 else pitch
+                am.smooth_move_to(pos[0] + side, pos[1] + random.randint(-4, 4),
+                                  random.uniform(0.12, 0.22), bow=3)
+                time.sleep(random.uniform(0.1, 0.2))
+                if ident(sct, pos, names) != FOOD:
+                    break
     if eaten:
         print(f"[먹기] 아까비깡 {eaten}개 먹음")
 
