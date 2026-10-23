@@ -511,6 +511,28 @@ def summon_cart(sct):
     return None
 
 
+def save_sell_debug(sct, w, cells, names):
+    """못 알아봤을 때 되팔기 창을 칸 위치 표시와 함께 sell_debug.png 로 저장."""
+    try:
+        if w is None:
+            return
+        img = Image.fromarray(shot_bgr(sct, w.left, w.top, w.width, w.height)[:, :, ::-1])
+        from PIL import ImageDraw
+        d = ImageDraw.Draw(img)
+        for pos in cells or []:
+            x, y = pos[0] - w.left, pos[1] - w.top
+            d.rectangle([x - 4, y - 4, x + 4, y + 4], outline=(255, 0, 255))
+        img.save(os.path.join(HERE, "sell_debug.png"))
+        print("  → 화면을 sell_debug.png 로 저장했어요 (분홍 네모 = 칸을 보는 자리)")
+        for pos in (cells or [])[:6]:
+            region = am.grab_cell(sct, pos[0], pos[1])
+            ds = {n: min((am.match_region(region, t) for t in _tpl.get(n, [])), default=None)
+                  for n in SELL}
+            print(f"    칸 {pos}: 읽은 것={ident(sct, pos, names)!r}  반지 차이={ds}")
+    except Exception as e:
+        print("  (디버그 저장 실패:", e, ")")
+
+
 def sell_all(sct):
     """아까비깡을 먹고, 리어카맨에게 결혼반지를 전부 팜. 팔 게 없으면 바로 True."""
     eat_all(sct)
@@ -552,18 +574,30 @@ def sell_all(sct):
         print("[문제] 리어카맨을 눌러도 되팔기 창이 안 뜸")
         return False
     time.sleep(random.uniform(0.5, 0.8))
+    w = find_title(_layout["titles"]["sell"])
+    mx, my = pyautogui.position()
+    if w is not None and w.left <= mx < w.left + w.width and w.top <= my < w.top + w.height:
+        # 리어카맨을 누른 자리가 되팔기 창 안이면 커서(설명 풍선)가 칸을 가림 → 창 밖으로 비켜둠
+        am.smooth_move_to(w.left - random.randint(30, 80), my, random.uniform(0.2, 0.35), bow=6)
+        time.sleep(random.uniform(0.3, 0.5))
     cells = grid("sell")
+    rings = []
+    for _ in range(3):                      # 창이 막 열려서 그림이 덜 그려졌을 수 있으니 몇 번 봄
+        rings = [pos for pos in cells if ident(sct, pos, names) in SELL]
+        if rings:
+            break
+        time.sleep(0.7)
     clicked = 0
-    for pos in cells:
+    for pos in rings:
         if not (running and alive):
             return False
-        if ident(sct, pos, names) in SELL:
-            click_at(pos, jx=4, jy=4)
-            clicked += 1
-            time.sleep(random.uniform(0.25, 0.45))
+        click_at(pos, jx=4, jy=4)
+        clicked += 1
+        time.sleep(random.uniform(0.25, 0.45))
     if clicked == 0:
         # 아이템 창엔 반지가 있는데 되팔기 창에서 못 알아봄 → 계속 소환하면 체력만 닳으니 멈춤
         print("[문제] 되팔기 창에서 결혼반지를 못 알아봄 — 칸 위치(measure_ring.py)를 확인하세요")
+        save_sell_debug(sct, w, cells, names)
         click_at(win_pt("sell_close"), jx=8, jy=3, label="닫기")
         return False
     print(f"  {clicked}개 올림 → 팔기")
