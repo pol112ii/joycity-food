@@ -69,6 +69,42 @@ STEPS = [
     ("sell_btn", "win", "되팔기 창 초록 [팔기] 버튼"),
     ("sell_close", "win", "되팔기 창 [닫기] 버튼"),
 ]
+# 일부만 다시 잴 때 고르는 묶음 (STEPS 의 번호, 0부터)
+GROUPS = [
+    ("아래 메뉴 아이콘 (아이템/직업/능력)", [0, 1, 2, 3], []),
+    ("아이템 창 칸", [4, 5, 6, 7], ["item"]),
+    ("능력 창 (고물소환/닫기)", [8, 9, 10], ["ability"]),
+    ("바닥 무더기 그림 (석분/철괴/상급키트)", [0, 11, 12, 13], []),
+    ("리어카맨 (이름 글자/몸통)", [14, 15], []),
+    ("되팔기 창 (칸/팔기/닫기)", [16, 17, 18, 19, 20, 21], ["sell"]),
+]
+
+
+def choose_steps():
+    """ring_layout.json 이 있으면 전부/일부 중 고르게 함. (단계 목록, 기존 데이터 또는 None)"""
+    if not os.path.exists(OUT):
+        return STEPS, None
+    try:
+        with open(OUT, encoding="utf-8") as f:
+            old = json.load(f)
+    except Exception:
+        return STEPS, None
+    print("\n이미 잰 값(ring_layout.json)이 있어요. 게임 업데이트로 바뀐 부분만 다시 잴 수 있어요.")
+    for n, (label, _, _) in enumerate(GROUPS, 1):
+        print(f"   {n}. {label}")
+    ans = input("다시 잴 번호 (예: 6  또는  3,6)  /  전부 다시 재려면 그냥 엔터: ").strip()
+    picks = sorted({int(t) for t in ans.replace(" ", ",").split(",") if t.isdigit()
+                    and 1 <= int(t) <= len(GROUPS)})
+    if not picks:
+        return STEPS, None
+    idx = sorted({i for g in picks for i in GROUPS[g - 1][1]})
+    for g in picks:                          # 다시 재는 창은 제목도 새로 받음
+        for wk in GROUPS[g - 1][2]:
+            old.get("titles", {}).pop(wk, None)
+    print("→ " + ", ".join(GROUPS[g - 1][0] for g in picks) + " 만 다시 잽니다 (나머지는 그대로)")
+    return [STEPS[i] for i in idx], old
+
+
 WIN_KIND = {"item_first": "item", "item_row1_last": "item", "item_row5_first": "item",
             "summon": "ability", "ability_close": "ability",
             "sell_first": "sell", "sell_row1_last": "sell", "sell_row5_first": "sell",
@@ -177,19 +213,26 @@ def main():
         dpi = int(ctypes.windll.user32.GetDpiForSystem())     # 화면 배율 (100% = 96)
     except Exception:
         dpi = None
-    data = {"titles": {"main": mw.title}, "ref_craft_w": cw.width, "dpi": dpi,
-            "points": {}, "sprites": {}}
+    steps, old = choose_steps()
+    if old is not None:
+        data = old                          # 안 다시 재는 값은 그대로 둠
+        data.setdefault("titles", {})["main"] = mw.title
+        data.setdefault("points", {})
+        data.setdefault("sprites", {})
+    else:
+        data = {"titles": {"main": mw.title}, "ref_craft_w": cw.width, "dpi": dpi,
+                "points": {}, "sprites": {}}
     i = 0
     box_first = None
-    while i < len(STEPS):
-        name, kind, guide = STEPS[i]
+    while i < len(steps):
+        name, kind, guide = steps[i]
         if kind == "box":
             part = "왼쪽 위" if box_first is None else "오른쪽 아래"
-            print(f"\n[{i + 1}/{len(STEPS)}] {guide}\n   → 그 그림의 {part} 모서리에 마우스 → F1")
+            print(f"\n[{i + 1}/{len(steps)}] {guide}\n   → 그 그림의 {part} 모서리에 마우스 → F1")
         elif kind == "say":
-            print(f"\n[{i + 1}/{len(STEPS)}] {guide}")
+            print(f"\n[{i + 1}/{len(steps)}] {guide}")
         else:
-            print(f"\n[{i + 1}/{len(STEPS)}] {guide}\n   → 마우스를 올리고 F1")
+            print(f"\n[{i + 1}/{len(steps)}] {guide}\n   → 마우스를 올리고 F1")
         key = wait_key()
         if key == "esc":
             print("\n그만둠 — 저장하지 않았습니다.")
