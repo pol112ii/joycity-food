@@ -585,13 +585,16 @@ def eat_all(sct):
     """
     eaten = 0
     names = all_names()
+    stuck = set()                           # 눌러도 안 줄던 칸 (다시 안 누름)
     for _ in range(3):                      # 먹고 나면 칸이 당겨질 수 있어서 다시 확인
         cells = grid("item")
-        foods = [pos for pos, n in item_contents(sct) if n == FOOD]
+        foods = [pos for pos, n in item_contents(sct) if n == FOOD and pos not in stuck]
         if not foods or cells is None:
             break
         pitch = max(cells[1][0] - cells[0][0], 20)
         for pos in foods:
+            same = 0
+            prev = am.grab_cell(sct, pos[0], pos[1])
             for _ in range(40):             # 한 칸 최대 40개까지
                 if not (running and alive):
                     return
@@ -602,8 +605,22 @@ def eat_all(sct):
                 am.smooth_move_to(pos[0] + side, pos[1] + random.randint(-4, 4),
                                   random.uniform(0.12, 0.22), bow=3)
                 time.sleep(random.uniform(0.1, 0.2))
-                if ident(sct, pos, names) != FOOD:
-                    break
+                cur = am.grab_cell(sct, pos[0], pos[1])
+                if np.abs(cur - prev).mean() < 1.5:
+                    same += 1               # 더블클릭했는데 칸이 그대로 (개수 숫자도 안 바뀜)
+                    if same >= 2:
+                        eaten -= same
+                        print("  [먹기] 눌러도 안 줄어듦 — 체력이 가득 찼거나 클릭이 안 먹음 → 이 칸은 그만")
+                        stuck.add(pos)
+                        break
+                else:
+                    same = 0
+                prev = cur
+                now = ident(sct, pos, names)
+                if now == "" or (now is not None and now != FOOD):
+                    break                   # 칸이 비었음 (또는 다른 물건으로 바뀜)
+                # now 가 None(못 알아봄)이면: 먹은 직후 칸이 반짝이거나 선택 표시가 생겨서
+                # 그림이 달라 보이는 것일 수 있음 → 비지 않았으면 계속 먹음
     if eaten:
         print(f"[먹기] 아까비깡 {eaten}개 먹음")
 
