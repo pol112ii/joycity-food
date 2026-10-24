@@ -56,6 +56,7 @@ CART_WAIT = 20                      # 고물소환 후 리어카맨이 나타나
 SPRITE_SURE = 0.62                  # 바닥 재료 그림 일치 기준 (0~1, 높을수록 엄격). 석분은 무더기끼리
                                     # 많이 겹쳐서 0.6대로 나옴 — 주운 뒤 아이템 창으로 확인하니 안전
 LABEL_SURE = 0.60                   # 리어카맨 이름 글자 일치 기준
+SELL_AT = 10                        # 반지가 이만큼 쌓이면 팔러 감 (리어카 소환 1번에 체력 100)
 REUSE_SURE = 0.80                   # '이미 있는 리어카맨'으로 믿을 기준 (애매하면 새로 소환)
 PICK_TRIES = 6                      # 재료 한 무더기를 줍기 위해 눌러볼 최대 횟수
 
@@ -802,9 +803,10 @@ def sell_all(sct):
     if n_sell == 0:
         return True
     free = got.count("")
-    if free >= MAX_ROUNDS + 1:
-        # 다음 한 바퀴(MAX_ROUNDS 번) 만들 자리가 남아 있으면 아직 안 팜 → 소환 횟수(체력) 아낌
-        print(f"[팔기] 반지 {n_sell}개 — 빈 칸 {free}개라 아직 자리 넉넉 → 다음에 팜")
+    # 반지가 SELL_AT 개 미만이고, 다음 한 바퀴 + 재료 줍기(무더기 4칸 정도) 자리가 남아 있으면
+    # 아직 안 팜 → 소환 횟수(체력) 아낌
+    if n_sell < SELL_AT and free >= MAX_ROUNDS + 5:
+        print(f"[팔기] 반지 {n_sell}개 (팔기 기준 {SELL_AT}개) · 빈 칸 {free}개 → 아직 안 팜")
         return True
     eat_all(sct)
     n_sell = sum(1 for _, n in item_contents(sct) if n in SELL)
