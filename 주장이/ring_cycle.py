@@ -56,7 +56,8 @@ CART_WAIT = 20                      # 고물소환 후 리어카맨이 나타나
 SPRITE_SURE = 0.62                  # 바닥 재료 그림 일치 기준 (0~1, 높을수록 엄격). 석분은 무더기끼리
                                     # 많이 겹쳐서 0.6대로 나옴 — 주운 뒤 아이템 창으로 확인하니 안전
 LABEL_SURE = 0.60                   # 리어카맨 이름 글자 일치 기준
-SELL_AT = 10                        # 반지가 이만큼 쌓이면 팔러 감 (리어카 소환 1번에 체력 100)
+SELL_AT = (5, 10)                   # 반지가 이 사이 개수(매번 랜덤)만큼 쌓이면 팔러 감
+                                    # (딱 정하려면 SELL_AT = 10 처럼 숫자 하나)
 REUSE_SURE = 0.80                   # '이미 있는 리어카맨'으로 믿을 기준 (애매하면 새로 소환)
 PICK_TRIES = 6                      # 재료 한 무더기를 줍기 위해 눌러볼 최대 횟수
 
@@ -813,6 +814,15 @@ def click_cart(sct, cart, body, extra=(0, 0)):
     return tx, ty, p2
 
 
+_sell_target = None             # 이번에 몇 개 쌓이면 팔지 (팔 때마다 새로 뽑음)
+
+
+def pick_sell_target():
+    if isinstance(SELL_AT, (tuple, list)):
+        return random.randint(int(SELL_AT[0]), int(SELL_AT[1]))
+    return int(SELL_AT)
+
+
 def sell_all(sct):
     """아까비깡을 먹고, 리어카맨에게 결혼반지를 전부 팜. 팔 게 없으면 바로 True."""
     got = [n for _, n in item_contents(sct)]
@@ -820,10 +830,13 @@ def sell_all(sct):
     if n_sell == 0:
         return True
     free = got.count("")
-    # 반지가 SELL_AT 개 미만이고, 다음 한 바퀴 + 재료 줍기(무더기 4칸 정도) 자리가 남아 있으면
+    global _sell_target
+    if _sell_target is None:
+        _sell_target = pick_sell_target()
+    # 반지가 이번 기준 개수 미만이고, 다음 한 바퀴 + 재료 줍기(무더기 4칸 정도) 자리가 남아 있으면
     # 아직 안 팜 → 소환 횟수(체력) 아낌
-    if n_sell < SELL_AT and free >= MAX_ROUNDS + 5:
-        print(f"[팔기] 반지 {n_sell}개 (팔기 기준 {SELL_AT}개) · 빈 칸 {free}개 → 아직 안 팜")
+    if n_sell < _sell_target and free >= MAX_ROUNDS + 5:
+        print(f"[팔기] 반지 {n_sell}개 (이번 팔기 기준 {_sell_target}개) · 빈 칸 {free}개 → 아직 안 팜")
         return True
     eat_all(sct)
     n_sell = sum(1 for _, n in item_contents(sct) if n in SELL)
@@ -910,6 +923,8 @@ def sell_all(sct):
     click_at(win_pt("sell_close"), jx=8, jy=3, label="닫기")
     wait_title("sell", False, 3)
     am._scan_cache = None
+    _sell_target = pick_sell_target()       # 다음엔 몇 개에서 팔지 새로 뽑음
+    print(f"  다음 팔기 기준: 반지 {_sell_target}개")
     return True
 
 
