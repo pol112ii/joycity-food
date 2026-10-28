@@ -646,8 +646,7 @@ def ability_ready(sct, timeout=4.0):
     return False
 
 
-_seen = []                      # [마지막으로 찾은 리어카맨 위치, 그때 시각]
-_bad_carts = []                 # 눌러도 되팔기 창이 안 열리던 리어카맨 자리 (다음 바퀴에도 기억)
+_bad_carts = []                 # 가만히 서서 눌러도 안 열리던 '가짜' 이름 자리 (다음 바퀴에도 기억)
 
 
 def _far(found, bad, dist=70):
@@ -686,7 +685,6 @@ def summon_cart(sct, bad=(), reuse=True):
         while running and alive and time.time() - t0 < CART_WAIT:
             found = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), bad)
             if found:
-                _seen[:] = [found[0], time.time()]
                 return found[0]
             time.sleep(0.1)
         if attempt == 0:
@@ -767,51 +765,63 @@ def locate_near(sct, c, radius):
         cx, cy = l + x + tw / 2, t + y + th / 2
         cands.append((int(cx), int(cy), float(mx)))
         res[max(0, y - th):y + th + 1, max(0, x - tw):x + tw + 1] = -1
-    cands = _far(cands, _bad_carts)       # 안 눌리던 리어카맨은 빼고
     if not cands:
         return None
     # 여러 명이면 방금 보던 리어카맨(가장 가까운 것)을 계속 따라감
     return min(cands, key=lambda q: (q[0] - c[0]) ** 2 + (q[1] - c[1]) ** 2)
 
 
-def click_cart(sct, cart, body, extra=(0, 0)):
-    """걸어 다니는 리어카맨을 누름.
+def chase_click(sct, cart, body, extra=(0, 0), limit=2.5):
+    """걸어 다니는 리어카맨을 따라가서 누름 → (누른 x, y, 리어카맨 위치) 또는 None(놓침).
 
-    잠깐 사이에 두 번 위치를 재서 걷는 속도/방향을 구하고, 마우스가 도착할
-    때쯤 있을 자리를 미리 계산해서 한 번에 부드럽게 가서 누름.
-    (따라가며 여러 번 고치는 것보다 자연스럽고 잘 맞음)
+    '방금 찍은 화면'에서 찾은 위치로만 누름 — 예전 위치로는 절대 안 누름.
+    (예전 위치를 누르면 리어카맨은 이미 지나가고 바닥 재료가 눌려서 주워짐)
+      1) 리어카맨 쪽으로 부드럽게 다가감
+      2) 짧은 간격으로 계속 다시 찾으면서 커서를 몸통 위로 맞춤 (따라감)
+      3) 방금 찾은 몸통 위에 커서가 올라가 있는 순간 누름
     """
-    if _seen and _seen[0] == cart and time.time() - _seen[1] < 1.0:
-        p1, t1 = cart, _seen[1]             # 방금 찾은 위치를 첫 번째로 씀 → 기다릴 필요 없음
-    else:
-        p1 = locate_near(sct, cart, 250) or cart
-        t1 = time.time()
-        time.sleep(0.08)
-    p2 = locate_near(sct, p1, 120) or p1
-    t2 = time.time()
-    vx, vy = (p2[0] - p1[0]) / (t2 - t1), (p2[1] - p1[1]) / (t2 - t1)
-    if (vx * vx + vy * vy) ** 0.5 > 600:        # 엉뚱한 걸 잡았으면 속도는 무시
-        vx = vy = 0.0
-    d = random.uniform(0.22, 0.32)
-    lead = (time.time() - t2) + d + 0.08
-    bx, by = body(p2)
-    bx, by = bx + extra[0], by + extra[1]
-    tx, ty = int(bx + vx * lead), int(by + vy * lead)
-    am.smooth_move_to(tx, ty, d, bow=6)
-    # 도착해서 한 번 더 확인 — 예상보다 많이 어긋났으면(벽에서 방향을 틀었을 때 등) 살짝 고침
-    p3 = locate_near(sct, p2, 120)
-    if p3:
-        nx, ny = body(p3)
-        nx, ny = int(nx + extra[0] + vx * 0.06), int(ny + extra[1] + vy * 0.06)
-        if abs(nx - tx) > 18 or abs(ny - ty) > 18:
-            am.smooth_move_to(nx, ny, random.uniform(0.05, 0.08), bow=0)
-            tx, ty = nx, ny
-        p2 = p3
-    time.sleep(random.uniform(0.02, 0.05))
-    pyautogui.mouseDown()
-    time.sleep(random.uniform(0.04, 0.08))
-    pyautogui.mouseUp()
-    return tx, ty, p2
+    k = scale()
+    tol = max(4, int(round(6 * k)))           # 커서와 몸통이 이만큼 안이면 누름
+    p = locate_near(sct, cart, 250)
+    if p is None:
+        return None
+
+    def target(q, vx, vy, ahead):
+        bx, by = body(q)
+        return int(bx + extra[0] + vx * ahead), int(by + extra[1] + vy * ahead)
+
+    tx, ty = target(p, 0, 0, 0)
+    am.smooth_move_to(tx, ty, random.uniform(0.18, 0.28), bow=6)
+    last, lt = p, time.time()
+    vx = vy = 0.0
+    misses = 0
+    t0 = time.time()
+    while running and alive and time.time() - t0 < limit:
+        q = locate_near(sct, last, int(90 * k) + 30)
+        now = time.time()
+        if q is None:                         # 잠깐 가려졌을 수 있음 → 조금 기다렸다 다시
+            misses += 1
+            if misses >= 6:
+                return None
+            time.sleep(0.03)
+            continue
+        misses = 0
+        dt = now - lt
+        if dt > 0.005:
+            nvx, nvy = (q[0] - last[0]) / dt, (q[1] - last[1]) / dt
+            if (nvx * nvx + nvy * nvy) ** 0.5 > 500:   # 다른 글자로 튀었으면 속도는 무시
+                nvx = nvy = 0.0
+            vx, vy = 0.5 * vx + 0.5 * nvx, 0.5 * vy + 0.5 * nvy
+        last, lt = q, now
+        tx, ty = target(q, vx, vy, 0.05)      # 누르기까지 걸리는 아주 짧은 시간만큼 앞
+        mx, my = pyautogui.position()
+        if abs(mx - tx) <= tol and abs(my - ty) <= tol:
+            pyautogui.mouseDown()
+            time.sleep(random.uniform(0.04, 0.07))
+            pyautogui.mouseUp()
+            return mx, my, q
+        am.smooth_move_to(tx, ty, random.uniform(0.035, 0.06), bow=0)
+    return None
 
 
 _sell_target = None             # 이번에 몇 개 쌓이면 팔지 (팔 때마다 새로 뽑음)
@@ -847,7 +857,6 @@ def sell_all(sct):
     cart = summon_cart(sct)
     if cart is None:
         return False
-    bad = _bad_carts
     fails = 0
     summoned_new = False
     off = _layout["points"]["cart_body"]
@@ -856,37 +865,54 @@ def sell_all(sct):
     def body(c):
         return int(c[0] + off["off_x"] * k), int(c[1] + off["off_y"] * k)
 
-    # 리어카맨 몸통 주변을 조금씩 다르게 2~3번 눌러봄 (가운데 → 조금 위 → 조금 아래)
-    spots = [(0, 0), (0, int(-16 * k)), (int(6 * k), int(14 * k))]
+    # 몸통 주변을 조금씩 다르게 눌러봄 (가운데 → 조금 위 → 조금 아래). 몸통 크기에 맞춰 비율로
+    dy = abs(off["off_y"]) * k
+    spots = [(0, 0), (0, -int(0.18 * dy)), (int(0.1 * dy), int(0.18 * dy))]
+    clicks = []                               # 이번 리어카맨을 누른 자리 (안 움직이는지 보려고)
+    opened = False
     for attempt in range(5):
-        opened = False
         for sx, sy in spots:
-            tx, ty, cart = click_cart(sct, cart, body, (sx, sy))
+            res = chase_click(sct, cart, body, (sx, sy))
+            if res is None:
+                # 놓침 → 화면 전체에서 다시 찾음 (방금 보던 곳에서 가까운 것)
+                found = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), _bad_carts)
+                if not found:
+                    print("  리어카맨을 놓침 (화면에 안 보임)")
+                    break
+                cart = min(found, key=lambda c: (c[0] - cart[0]) ** 2 + (c[1] - cart[1]) ** 2)
+                continue
+            tx, ty, cart = res
+            clicks.append(cart[:2])
             print(f"  리어카맨 클릭 → ({tx}, {ty})  (이름 일치 {cart[2]:.2f})")
             if wait_title("sell", True, 1.2):
                 opened = True
                 break
         if opened:
             break
-        print("  되팔기 창이 안 뜸 → 다시")
         fails += 1
-        if fails == 1:
+        print("  되팔기 창이 안 뜸 → 다시")
+        if fails == 1 and clicks:
             save_cart_debug(sct, (tx, ty), cart)
-        if fails >= 2 and not summoned_new:
-            # 같은 자리를 두 번 눌러도 안 열림 → 남아 있던(눌리지 않는) 리어카맨이거나 잘못 찾은 것
-            # → 그 자리는 빼고 새로 소환
-            bad.append(cart[:2])
-            print("  그 자리는 진짜 리어카맨이 아닌 것 같음 → 새로 소환")
+        # 여러 번 눌렀는데 이름이 한 번도 안 움직였으면 걸어 다니는 리어카맨이 아님 (가짜 글자)
+        still = len(clicks) >= 3 and max(abs(c[0] - clicks[0][0]) + abs(c[1] - clicks[0][1])
+                                         for c in clicks) <= 4
+        found = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), _bad_carts)
+        lost = not found
+        if (still or lost) and not summoned_new:
+            if still:
+                _bad_carts.append(clicks[0])
+                print("  그 이름은 안 움직임 → 진짜 리어카맨이 아닌 것 같음 → 새로 소환")
+            else:
+                print("  리어카맨이 안 보임 → 새로 소환")
             summoned_new = True
-            new = summon_cart(sct, bad=bad, reuse=False)
+            new = summon_cart(sct, bad=_bad_carts, reuse=False)
             if new is None:
                 return False
-            cart = new
+            cart, clicks = new, []
             continue
-        again = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), bad)
-        if again:
-            cart = again[0]
-    else:
+        if not lost:
+            cart = min(found, key=lambda c: (c[0] - cart[0]) ** 2 + (c[1] - cart[1]) ** 2)
+    if not opened:
         print("[문제] 리어카맨을 눌러도 되팔기 창이 안 뜸 — cart_debug.png 를 보내주세요")
         return False
     time.sleep(random.uniform(0.5, 0.8))
