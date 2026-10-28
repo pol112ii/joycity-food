@@ -798,7 +798,7 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6):
     t0 = time.time()
     while running and alive and time.time() - t0 < limit:
         ts = time.time()
-        q = locate_near(sct, last, int(90 * k) + 30)
+        q = locate_near(sct, last, int((90 * k + 30) * (1 + misses)))   # 놓치면 더 넓게
         now = time.time()
         look = 0.7 * look + 0.3 * (now - ts)
         if q is None:                         # 잠깐 가려졌을 수 있음 → 조금 기다렸다 다시
@@ -814,7 +814,7 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6):
         jerk = abs(last[0] + vx * dt - q[0]) + abs(last[1] + vy * dt - q[1])
         if dt > 0.005:
             nvx, nvy = (q[0] - last[0]) / dt, (q[1] - last[1]) / dt
-            if (nvx * nvx + nvy * nvy) ** 0.5 > 600:   # 다른 글자로 튀었으면 속도는 무시
+            if (nvx * nvx + nvy * nvy) ** 0.5 > 900 * k:   # 다른 글자로 튀었으면 속도는 무시
                 nvx = nvy = 0.0
             vx, vy = 0.5 * vx + 0.5 * nvx, 0.5 * vy + 0.5 * nvy
         last, lt = q, tq
