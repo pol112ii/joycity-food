@@ -660,19 +660,31 @@ class Sewing:
         return k, T_cur, T_cur + self.trk.P
 
     # ---------- 구간이 바뀔 때 ----------
+    def row_evidence(self, i, k, obs):
+        """띠 자리 i 가 k 구간에 실제로 박혔는지(obs) → 박음질 줄 -1/0/+1 중 어느 게 맞는지 셈.
+
+        한쪽이 3번 더 맞으면 그 줄로 바꿈. 바꿨으면 True.
+        """
+        trk = self.trk
+        for h in self.hyp:
+            self.hyp[h] += (trk.present(i, k, trk.hit + h) == obs)
+        best = max((-1, 1), key=lambda h: self.hyp[h])
+        if self.hyp[best] - self.hyp[0] >= 3 and self.hyp[best] > self.hyp[-best]:
+            trk.hit += best
+            self.hyp = {-1: 0, 0: 0, 1: 0}
+            self.pa = PRESS_AFTER
+            print(f"  [보정] 점수 변화로 보니 박음질 줄이 한 줄 {'아래' if best > 0 else '위'} "
+                  f"→ {trk.hit}번 줄로 맞춤")
+            return True
+        return False
+
     def new_interval(self, k):
-        iv, trk = self.iv, self.trk
+        iv = self.iv
         if iv is not None and iv["n"] >= 3 and iv["t1"] - iv["t0"] >= 0.12:
             d = iv["s1"] - iv["s0"]
             obs = True if d > 0.6 else (False if d < -1.5 else None)
             if obs is not None:
-                for h in self.hyp:
-                    self.hyp[h] += (trk.present(iv["i"], iv["k"], trk.hit + h) == obs)
-                best = max(self.hyp, key=lambda h: self.hyp[h])
-                if best != 0 and self.hyp[best] - self.hyp[0] >= 3:
-                    trk.hit += best
-                    print(f"  [보정] 점수 변화로 보니 박음질 줄이 {best:+d} → {trk.hit}번 줄로 맞춤")
-                    self.hyp = {-1: 0, 0: 0, 1: 0}
+                self.row_evidence(iv["i"], iv["k"], obs)
             if d == 0 and iv["t1"] - iv["t0"] >= 0.25:
                 self.stuck += 1
                 if self.stuck == 4:
@@ -768,20 +780,24 @@ class Sewing:
         recent = max(s for (t, s) in self.scores if self.tf - t <= 0.3)
         if recent - self.sc < 2.5:
             return
+        held = self.keys.held()
         since = now - min(t for t in self.keys.down.values() if t is not None)
         self.keys.release_all()
         self.pending_end = None
         self.hold_off = T_next + 0.01
         self.res["pen"] += 1
-        if since < 0.2:
-            self.pa = min(0.15, self.pa + 0.02)
-            why = "누르자마자"
-        elif T_next - now < 0.2:
-            self.rb = min(0.16, self.rb + 0.02)
-            why = "떼기 직전에"
-        else:
-            why = "누르는 중간에"
-        print(f"  [빨간 실] {why} 점수가 깎임 → 바로 뗌 (누름 지연 {self.pa:.2f}초 · 뗌 여유 {self.rb:.2f}초)")
+        why = "누르자마자" if since < 0.2 else ("떼기 직전에" if T_next - now < 0.2 else "누르는 중간에")
+        print(f"  [빨간 실] {why} 점수가 깎임 → 바로 뗌")
+        # 깎였다 = 그 구간에 띠가 없었다 → 박음질 줄 확인에 씀. 줄이 맞으면 타이밍을 조금 보정
+        moved = False
+        if len(held) == 1 and self.lane is not None:
+            i = 2 * self.lane + (0 if held[0] == LEFT_KEY else 1)
+            moved = self.row_evidence(i, self.trk.count(now - 0.08)[0], False)
+        if not moved:
+            if since < 0.2:
+                self.pa = min(0.12, self.pa + 0.02)
+            elif T_next - now < 0.2:
+                self.rb = min(0.16, self.rb + 0.02)
         self.scores.clear()
         self.scores.append((self.tf, self.sc))
 
