@@ -62,6 +62,17 @@ RECOVER_MAX = 3                     # 실패하면 게임 창을 정리하고 �
 REUSE_SURE = 0.80                   # '이미 있는 리어카맨'으로 믿을 기준 (애매하면 새로 소환)
 PICK_TRIES = 6                      # 재료 한 무더기를 줍기 위해 눌러볼 최대 횟수
 
+# ----- 쉬는 시간 (쉬지 않고 계속 만들면 매크로로 보일 수 있어서) -----
+# 세 종류를 섞음. 범위 안에서 매번 랜덤이고, 대부분 짧은 쪽으로 나오다가 가끔 길게 나옴.
+# 판이 끝나고 다음 판 시작 전에만 쉼 (카드판/리어카맨 중간에는 안 쉼). 쉬는 중에도 F8 = 바로 멈춤
+REST = True                         # False 로 하면 안 쉼
+PAUSE_CHANCE = 0.15                 # ① 멈칫: 판 사이에 이 확률로
+PAUSE_SECS = (3, 20)                #          이만큼(초) 잠깐 멈춤
+SHORT_EVERY = (4, 10)               # ② 짧은 쉼: 이 판수마다
+SHORT_SECS = (20, 150)              #          이만큼(초) 쉼
+LONG_EVERY = (30, 70)               # ③ 긴 휴식: 이만큼(분) 돌 때마다
+LONG_MINS = (4, 15)                 #          이만큼(분) 쉼
+
 running = False
 alive = True
 _layout = None
@@ -530,6 +541,71 @@ def close_game_windows(sct):
     am._scan_cache = None
 
 
+def _skewed(lo, hi):
+    """lo~hi 사이 랜덤 — 대부분 짧은 쪽, 가끔 긴 쪽 (사람이 쉬는 시간처럼)."""
+    return random.triangular(lo, hi, lo + (hi - lo) * 0.25)
+
+
+def _fmt(sec):
+    m, s = divmod(int(sec), 60)
+    return f"{m}분 {s}초" if m else f"{s}초"
+
+
+_rest = {}                      # 쉬는 시간 계산용 (다음 짧은 쉼까지 판수, 다음 긴 휴식 시각 등)
+
+
+def _plan_rest(now=None):
+    now = now or time.time()
+    _rest["games"] = 0
+    _rest["short_at"] = random.randint(*SHORT_EVERY)
+    _rest.setdefault("since", now)
+    _rest.setdefault("long_at", now + _skewed(*LONG_EVERY) * 60)
+
+
+def rest_for(sec, why):
+    """sec 초 동안 쉼. 가끔 마우스만 살짝 움직임 (클릭은 안 함). F8/F9 누르면 바로 끝."""
+    print(f"[휴식] {why} — {_fmt(sec)} 쉼  (F8 = 바로 멈춤)")
+    end = time.time() + sec
+    nudge = time.time() + random.uniform(15, 60)
+    while running and alive and time.time() < end:
+        time.sleep(min(0.5, max(0.05, end - time.time())))
+        if time.time() >= nudge and time.time() < end - 2:
+            nudge = time.time() + random.uniform(20, 90)
+            if random.random() < 0.5:        # 사람처럼 가끔 마우스만 조금 옮김
+                mx, my = pyautogui.position()
+                w = main_win()
+                nx, ny = mx + random.randint(-150, 150), my + random.randint(-100, 100)
+                if w is not None:
+                    nx = min(max(nx, w.left + 20), w.left + w.width - 20)
+                    ny = min(max(ny, w.top + 40), w.top + w.height - 20)
+                am.smooth_move_to(nx, ny, random.uniform(0.3, 0.8), bow=10)
+    if running and alive:
+        print("  휴식 끝 → 계속")
+
+
+def maybe_rest():
+    """판 하나가 끝날 때마다 불림 — 멈칫 / 짧은 쉼 / 긴 휴식 중 해당하는 걸 함."""
+    if not REST:
+        return
+    now = time.time()
+    if "short_at" not in _rest:
+        _plan_rest(now)
+    _rest["games"] += 1
+    if now >= _rest["long_at"]:
+        played = (now - _rest["since"]) / 60
+        rest_for(_skewed(*LONG_MINS) * 60, f"긴 휴식 (약 {played:.0f}분 돌았음)")
+        _rest.pop("long_at", None)
+        _rest["since"] = time.time()
+        _plan_rest()
+        return
+    if _rest["games"] >= _rest["short_at"]:
+        rest_for(_skewed(*SHORT_SECS), f"짧은 쉼 ({_rest['games']}판 만들었음)")
+        _plan_rest()
+        return
+    if random.random() < PAUSE_CHANCE:
+        rest_for(_skewed(*PAUSE_SECS), "잠깐 멈칫")
+
+
 def craft_all(sct):
     """재료가 떨어질 때까지 반지 만들기. 몇 번 했는지 반환 (-1 = 오류로 멈춤)."""
     am.RECIPE = list(RECIPE)
@@ -596,6 +672,7 @@ def craft_all(sct):
             fails = 0
             print(f"★ 반지 만들기 {done}번째 완료 (클릭 {stats['clicks']}회, {stats['secs']}초)")
             time.sleep(random.uniform(1.0, 2.0))
+            maybe_rest()
         else:
             fails += 1
             if fails >= 3:
@@ -1054,6 +1131,8 @@ def toggle():
     global running
     running = not running
     am.running = running
+    if running:
+        _rest.clear()                       # 직접 멈췄다 다시 켜면 쉬는 시간 계산도 새로 시작
     print("\n▶ 시작됨" if running else "\n⏸ 정지됨 (지금 하던 동작이 끝나면 멈춤)")
 
 
