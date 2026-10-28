@@ -415,7 +415,8 @@ class Tracker:
     """
 
     def __init__(self, hit):
-        self.hit = hit
+        self.A = hit               # 띠 아래끝이 이 줄에 오면 박음질 시작
+        self.D = hit               # 띠 위끝이 이 줄을 지나면 박음질 끝
         self.cells = np.full((NCOL, 2 * OFF), -1, np.int8)
         self.hist = deque(maxlen=4)
         self.events = []           # (틱 번호, 그 전 화면 시각, 그 후 화면 시각)
@@ -504,17 +505,28 @@ class Tracker:
         self.cells[:, a0:a0 + SEE_ROWS] = occ & (self.still < 9)
         self.integrated += 1
 
-    def present(self, i, k, hit=None):
-        a = (self.hit if hit is None else hit) - k + OFF
-        if not 0 <= a < self.cells.shape[1]:
+    def present(self, i, k):
+        """띠 자리 i 가 틱 k 구간에 박음질 중인지.
+
+        D <= A : A~D 줄 사이 칸이 전부 띠  (A == D 면 그 한 줄)
+        D >  A : A~D 줄 사이에 띠가 하나라도
+        """
+        lo, hi = min(self.A, self.D) - k + OFF, max(self.A, self.D) - k + OFF
+        if lo < 0 or hi >= self.cells.shape[1]:
             return False
-        return self.cells[i, a] == 1
+        seg = self.cells[i, lo:hi + 1] == 1
+        return bool(seg.all() if self.D <= self.A else seg.any())
 
     def gains(self, k, horizon):
         """칸별·구간별 박을 수 있는 띠 수 (5 x horizon)."""
-        a = self.hit - k + OFF
-        idx = np.clip(a - np.arange(horizon), 0, self.cells.shape[1] - 1)
-        g = (self.cells[:, idx] == 1).astype(np.int16)
+        occ = self.cells == 1
+        js = np.arange(horizon)
+        g = None
+        for r in range(min(self.A, self.D), max(self.A, self.D) + 1):
+            idx = np.clip(r - k + OFF - js, 0, self.cells.shape[1] - 1)
+            m = occ[:, idx]
+            g = m if g is None else (g & m if self.D <= self.A else g | m)
+        g = g.astype(np.int16)
         return g[0::2] + g[1::2]
 
 
@@ -590,7 +602,7 @@ def wait_until(t):
 # 판이 바뀌어도 기억하는 값 (한 번 맞춘 박음질 줄 / 키 반응 시간은 다음 판에도 씀)
 # 프로그램을 껐다 켜도 이어 쓰도록 sew_learn.json 에 저장함
 LEARN_FILE = os.path.join(HERE, "sew_learn.json")
-_learned = {"hit": None, "lat": [], "rb": None}
+_learned = {"dA": 0, "dD": 0, "lat": [], "rb": None}
 
 
 def load_learned():
@@ -600,11 +612,11 @@ def load_learned():
             d = json.load(f)
         if d.get("lat") is not None:
             _learned["lat"] = [float(d["lat"])] * 3
-        if d.get("hit"):
-            _learned["hit"] = int(d["hit"])
+        _learned["dA"] = int(d.get("dA", 0))
+        _learned["dD"] = int(d.get("dD", 0))
         if d.get("rb"):
             _learned["rb"] = float(d["rb"])
-        print(f"지난번에 맞춘 값: 키 반응 {d.get('lat', 0):.2f}초 · 박음질 줄 {d.get('hit')}")
+        print(f"지난번에 맞춘 값: 키 반응 {d.get('lat') or 0:.2f}초 · 시작 줄 {_learned['dA']:+d} · 끝 줄 {_learned['dD']:+d}")
     except Exception:
         pass
 
@@ -614,7 +626,7 @@ def save_learned():
         import json
         lat = float(np.median(_learned["lat"])) if _learned["lat"] else None
         with open(LEARN_FILE, "w", encoding="utf-8") as f:
-            json.dump({"lat": lat, "hit": _learned["hit"], "rb": _learned["rb"]}, f)
+            json.dump({"lat": lat, "dA": _learned["dA"], "dD": _learned["dD"], "rb": _learned["rb"]}, f)
     except Exception:
         pass
 
@@ -645,7 +657,7 @@ class Sewing:
         self.lane = None
         self.target = 2
         self.last_k = None
-        self.hyp = {-1: 0, 0: 0, 1: 0}       # 박음질 줄 보정용: 점수 변화와 맞은 횟수
+        self.ev_start = self.ev_end = 0       # 누를 때 / 뗄 때 빨간 실 횟수 (보정용)
         self.iv = None                        # 한 버튼만 눌린 동안의 점수 기록 (화면 시각)
         self.stuck = 0
         self.ends = []                        # 띠 끝에서 뗀 뒤 점수 변화
@@ -688,7 +700,7 @@ class Sewing:
                     save_debug(img, Geo((0, 0, REF_W, 251)), os.path.join(HERE, "sew_debug.png"))
                 return False
             print("  (천을 화면에서 못 찾아서 measure_sew.py 로 잰 모서리를 씀)")
-        hit = _learned["hit"] or geo.hit
+        hit = geo.hit
         print(f"  천 {geo.R - geo.L:.0f}x{geo.B - geo.T:.0f} (배율 {geo.s:.2f}) · 박음질 줄 {hit}"
               + ("" if geo.line_found else " (빨간 실선 못 찾음 — 기본값)")
               + (f" · 키 반응 {self.comp:.2f}초 (지난 판에서 잰 값)" if len(self.lat) >= 2 else ""))
@@ -701,6 +713,9 @@ class Sewing:
         self.ox, self.oy = cx0, cy0                 # 창 왼쪽 위 → 잘라 찍는 곳
         self.cw, self.ch = cx1 - cx0, cy1 - cy0
         self.trk = Tracker(hit)
+        self.hit0 = hit
+        self.trk.A += _learned["dA"]
+        self.trk.D += _learned["dD"]
         self.lane = self.g.needle_lane(self.grab())
         self.target = self.lane if self.lane is not None else 2
         focus_game(w)
@@ -795,31 +810,33 @@ class Sewing:
         return best
 
     # ---------- 구간이 바뀔 때 ----------
-    def row_evidence(self, i, k, obs):
-        """띠 자리 i 가 (화면 시각) k 구간에 실제로 박혔는지(obs) → 박음질 줄 -1/0/+1 중 맞는 쪽을 셈.
-
-        한쪽이 3번 더 맞으면 그 줄로 바꿈. 바꿨으면 True.
-        """
+    def edge_evidence(self, i, kv):
+        """점수가 깎인 구간 kv 가 띠의 첫 구간인지 마지막 구간인지 보고, 그쪽 끝만 한 칸 보정."""
         trk = self.trk
-        for h in self.hyp:
-            self.hyp[h] += (trk.present(i, k, trk.hit + h) == obs)
-        best = max((-1, 1), key=lambda h: self.hyp[h])
-        if self.hyp[best] - self.hyp[0] >= 3 and self.hyp[best] > self.hyp[-best]:
-            trk.hit += best
-            self.hyp = {-1: 0, 0: 0, 1: 0}
-            self.pa = PRESS_AFTER
-            print(f"  [보정] 점수 변화로 보니 박음질 줄이 한 줄 {'아래' if best > 0 else '위'} "
-                  f"→ {trk.hit}번 줄로 맞춤")
-            return True
-        return False
+        if not trk.present(i, kv):
+            return
+        first = not trk.present(i, kv - 1)
+        last = not trk.present(i, kv + 1)
+        if first == last:
+            return                                  # 한 칸짜리이거나 중간 → 어느 끝인지 모름
+        if last:
+            self.ev_end += 1
+            if self.ev_end >= 2 and trk.D > self.hit0 - 2:
+                trk.D -= 1
+                self.ev_end = 0
+                print("  [보정] 띠가 끝나는 걸 한 칸 일찍 보도록 맞춤 (뗄 때 빨간 실이 나와서)")
+        else:
+            self.ev_start += 1
+            if self.ev_start >= 2 and trk.A < self.hit0 + 2:
+                trk.A += 1
+                self.ev_start = 0
+                print("  [보정] 띠가 시작하는 걸 한 칸 늦게 보도록 맞춤 (누를 때 빨간 실이 나와서)")
 
     def new_interval(self, k):
         iv = self.iv
         if iv is not None and iv["n"] >= 3 and iv["t1"] - iv["t0"] >= 0.12:
             d = iv["s1"] - iv["s0"]
             obs = True if d > 0.6 else (False if d < -1.5 else None)
-            if obs is not None:
-                self.row_evidence(iv["i"], iv["k"], obs)
             if d == 0 and iv["t1"] - iv["t0"] >= 0.25:
                 self.stuck += 1
                 if self.stuck == 4:
@@ -932,14 +949,8 @@ class Sewing:
         # 깎였다 = 그 구간에 띠가 없었다 → 박음질 줄 확인에 씀. 줄이 맞으면 타이밍을 조금 보정
         lit = [c for c in (0, 1) if self.btn[c]]
         cs = lit if len(lit) == 1 else ([0 if held[0] == LEFT_KEY else 1] if len(held) == 1 else [])
-        moved = False
         if cs and self.lane is not None:
-            moved = self.row_evidence(2 * self.lane + cs[0], kv, False)
-        if not moved:
-            if since < 0.2:
-                self.pa = min(0.12, self.pa + 0.02)
-            elif T_next - now < 0.2:
-                self.rb = min(0.25, self.rb + 0.02)
+            self.edge_evidence(2 * self.lane + cs[0], kv)
         self.scores.clear()
         self.scores.append((self.tf, self.sc))
 
@@ -1025,12 +1036,13 @@ class Sewing:
         if len(self.lat) >= 2:
             _learned["lat"] = self.lat[-12:]
         if self.res["score"] > 50:
-            _learned["hit"] = self.trk.hit
+            _learned["dA"] = self.trk.A - self.hit0
+            _learned["dD"] = self.trk.D - self.hit0
             _learned["rb"] = self.rb
         save_learned()
         dts = np.array(self.dts[5:] or [0.0])
         print(f"  (키 반응 {self.comp:.2f}초 · 화면 한 바퀴 평균 {dts.mean() * 1000:.0f}ms"
-              f" 최대 {dts.max() * 1000:.0f}ms · 박음질 줄 {self.trk.hit}"
+              f" 최대 {dts.max() * 1000:.0f}ms · 시작 줄 {self.trk.A} · 끝 줄 {self.trk.D}"
               f" · 누름 지연 {self.pa:.2f} · 뗌 여유 {self.rb:.2f})")
         self.res.update(secs=time.time() - t_start, presses=self.keys.presses,
                         ok=self.res["score"] >= 235)
