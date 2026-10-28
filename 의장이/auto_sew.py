@@ -63,6 +63,7 @@ MOVE_TIME = (0.08, 0.20)            # 바늘을 옮길 때 마우스 이동 시�
 LOOP_DT = 0.004                     # 화면 보는 간격(초)
 DEBUG = False                       # True 면 게임 중 상태를 자주 찍음
 SAVE_DEBUG_SHOT = True              # 판 시작 때 화면 인식 결과를 sew_debug.png 로 저장 (문제 생기면 보내주세요)
+DUMP_FRAMES = True                  # 첫 판 40초 동안 화면을 sew_frames 폴더에 저장 (분석용 — 다 되면 False)
 
 # 사람처럼 쉬기 (판과 판 사이에만 쉼. REST = False 면 안 쉼)
 REST = False                        # 의장이는 쉬지 않고 계속 (True 로 바꾸면 아래 설정대로 쉼)
@@ -603,6 +604,7 @@ def wait_until(t):
 # 프로그램을 껐다 켜도 이어 쓰도록 sew_learn.json 에 저장함
 LEARN_FILE = os.path.join(HERE, "sew_learn.json")
 _learned = {"dA": 0, "dD": 0, "lat": [], "rb": None}
+_dumped = [False]
 
 
 def load_learned():
@@ -669,6 +671,10 @@ class Sewing:
         self.noresp = 0
         self.iter_dt = 0.02                   # 한 바퀴(화면 읽기+계산) 걸리는 시간
         self.dts = []
+        self.dump = DUMP_FRAMES and not _dumped[0]
+        self.dump_k = None
+        self.dump_log = []
+        self.t0 = time.time()
 
     @property
     def comp(self):
@@ -756,7 +762,48 @@ class Sewing:
             while self.score_hist and tf - self.score_hist[0][0] > 3.0:
                 self.score_hist.popleft()
             self.res["score"] = max(self.res["score"], self.sc)
+        if self.dump:
+            self.dump_frame(img, tf)
         return True
+
+    def dump_frame(self, img, tf):
+        """분석용: 틱마다 한 장(구간 가운데)씩, 그리고 키를 누르고 뗀 직후 화면을 저장."""
+        if tf - self.t0 > 35:
+            return
+        trk = self.trk
+        if trk.phi is None:
+            return
+        k, frac = trk.count(tf)
+        if not (0.4 < frac < 0.6 and k != self.dump_k):
+            return
+        self.dump_k = k
+        try:
+            from PIL import Image
+            d = os.path.join(HERE, "sew_frames")
+            os.makedirs(d, exist_ok=True)
+            y1 = int(self.g.line + 20 * self.g.s)
+            Image.fromarray(img[:y1, :, ::-1].clip(0, 255).astype(np.uint8)).save(
+                os.path.join(d, f"{tf - self.t0:07.3f}.png"))
+            self.dump_log.append(f"frame {tf - self.t0:.3f} k={k} frac={frac:.2f} lane={self.lane} "
+                                 f"score={self.sc} btn={self.btn}")
+        except Exception:
+            self.dump = False
+
+    def write_dump(self):
+        try:
+            d = os.path.join(HERE, "sew_frames")
+            os.makedirs(d, exist_ok=True)
+            trk, g = self.trk, self.g
+            lines = [f"phi={trk.phi - self.t0 if trk.phi else None} P={trk.P} A={trk.A} D={trk.D} "
+                     f"box={g.box} clip={g.clip} rh={g.rh} line={g.line} comp={self.comp:.3f}"]
+            lines += [f"key {t - self.t0:.3f} {k} {'down' if on else 'up'}" for (t, k, on) in self.keys.log]
+            lines += self.dump_log
+            with open(os.path.join(d, "log.txt"), "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            _dumped[0] = True
+            print(f"  (분석용 화면 {len(self.dump_log)}장을 sew_frames 폴더에 저장함)")
+        except Exception as e:
+            print(f"  (분석용 화면 저장 실패: {e})")
 
     def measure_latency(self, tf, btn):
         """키를 보낸 뒤 버튼 색이 바뀌어 보일 때까지 걸린 시간 = 키 → 화면 반응 시간."""
@@ -1033,6 +1080,8 @@ class Sewing:
                     time.sleep(LOOP_DT)
         finally:
             self.keys.release_all()
+        if self.dump and self.dump_log:
+            self.write_dump()
         if len(self.lat) >= 2:
             _learned["lat"] = self.lat[-12:]
         if self.res["score"] > 50:
