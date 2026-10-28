@@ -58,6 +58,7 @@ SPRITE_SURE = 0.62                  # 바닥 재료 그림 일치 기준 (0~1, �
 LABEL_SURE = 0.60                   # 리어카맨 이름 글자 일치 기준
 SELL_AT = (5, 10)                   # 반지가 이 사이 개수(매번 랜덤)만큼 쌓이면 팔러 감
                                     # (딱 정하려면 SELL_AT = 10 처럼 숫자 하나)
+RECOVER_MAX = 3                     # 실패하면 게임 창을 정리하고 처음부터 다시 — 연속으로 이만큼 실패하면 멈춤
 REUSE_SURE = 0.80                   # '이미 있는 리어카맨'으로 믿을 기준 (애매하면 새로 소환)
 PICK_TRIES = 6                      # 재료 한 무더기를 줍기 위해 눌러볼 최대 횟수
 
@@ -474,7 +475,8 @@ def recipe_ok(sct):
 
 def find_red_close(sct, w):
     """창 오른쪽 위 빨간 동그라미(닫기 버튼) 위치. 못 찾으면 None."""
-    bw, bh = min(160, w.width), min(70, w.height)
+    # 제목 줄 높이만 봄 (더 내려가면 칸 안의 빨간 반지 그림까지 섞임)
+    bw, bh = min(160, w.width), min(max(28, int(w.height * 0.09)), w.height)
     img = shot_bgr(sct, w.left + w.width - bw, w.top, bw, bh).astype(int)
     b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
     ys, xs = np.nonzero((r > 190) & (g < 120) & (b < 120))
@@ -500,6 +502,32 @@ def close_craft(sct):
             return True
     print("  [문제] 제작 창이 안 닫힘")
     return False
+
+
+def close_game_windows(sct):
+    """조이톡 메인 창만 남기고 게임 안에서 뜬 창(되팔기/능력/아이템/카드판/제작/직업)을 닫음.
+
+    다른 프로그램 창(cmd, 브라우저 등)은 건드리지 않음.
+    """
+    kinds = [(_layout["titles"].get(k), k) for k in ("sell", "ability", "item")]
+    if am._layout is not None:
+        kinds += [(am._layout["titles"].get(k), k) for k in ("card", "craft", "job")]
+    closed = []
+    for _ in range(2):                      # 닫고 나면 밑에 있던 창이 보일 수 있어서 두 번 훑음
+        for title, kind in kinds:
+            if not title or _norm(title) == _norm(_layout["titles"]["main"]):
+                continue
+            w = find_title(title)
+            if w is None:
+                continue
+            pt = win_pt("sell_close", w) if kind == "sell" else find_red_close(sct, w)
+            if pt is None:
+                continue
+            click_at(pt, jx=1 if kind != "sell" else 6, jy=1 if kind != "sell" else 3)
+            closed.append(title)
+            time.sleep(random.uniform(0.4, 0.7))
+    print(f"  [정리] 닫은 창: {', '.join(closed) if closed else '없음'}")
+    am._scan_cache = None
 
 
 def craft_all(sct):
@@ -973,7 +1001,7 @@ def worker():
             alive = False
             return
         print(f"준비 완료 — 그림: {', '.join(_sprites)}  /  F8 로 시작")
-        cycle = zero = 0
+        cycle = zero = recover = 0
         with mss.mss() as sct:
             while alive:
                 if not running:
@@ -982,19 +1010,31 @@ def worker():
                 am.running = am.alive = True
                 cycle += 1
                 print(f"\n========== {cycle}바퀴째 ==========")
+                problem = None
+                n = 0
                 if not sell_all(sct):
-                    running = False
-                    print("⏸ 팔기 실패로 멈춤 — 확인 후 F8")
+                    problem = "팔기"
+                elif not pick_up(sct):
+                    problem = "줍기"
+                else:
+                    n = craft_all(sct)
+                    if n < 0:
+                        problem = "만들기"
+                if problem:
+                    if not running:                 # F8 로 멈춘 것 — 실패 아님
+                        continue
+                    recover += 1
+                    if recover > RECOVER_MAX:
+                        running = False
+                        recover = 0
+                        print(f"⏸ {problem} 실패가 {RECOVER_MAX + 1}번 연속 — 멈춤. 화면 확인 후 F8")
+                        continue
+                    # 멈추지 않고: 조이톡 말고 게임 안에 뜬 창을 다 닫고 처음부터 다시
+                    print(f"[복구] {problem} 실패 → 게임 창 정리하고 처음부터 다시 ({recover}/{RECOVER_MAX})")
+                    close_game_windows(sct)
+                    time.sleep(random.uniform(1.5, 2.5))
                     continue
-                if not pick_up(sct):
-                    running = False
-                    print("⏸ 줍기 실패로 멈춤 — 확인 후 F8")
-                    continue
-                n = craft_all(sct)
-                if n < 0:
-                    running = False
-                    print("⏸ 만들기 오류로 멈춤 — 확인 후 F8")
-                    continue
+                recover = 0
                 zero = zero + 1 if n == 0 else 0
                 if zero >= 3:
                     running = False
