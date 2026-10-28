@@ -65,7 +65,7 @@ DEBUG = False                       # True 면 게임 중 상태를 자주 찍�
 SAVE_DEBUG_SHOT = True              # 판 시작 때 화면 인식 결과를 sew_debug.png 로 저장 (문제 생기면 보내주세요)
 
 # 사람처럼 쉬기 (판과 판 사이에만 쉼. REST = False 면 안 쉼)
-REST = True
+REST = False                        # 의장이는 쉬지 않고 계속 (True 로 바꾸면 아래 설정대로 쉼)
 BREATH_SECS = (1.5, 5)              # 판 끝나고 다음 판까지 잠깐
 SHORT_EVERY = (1, 5)                # 짧은 쉼: 이 판수마다 한 번
 SHORT_SECS = (10, 60)               #   쉬는 시간(초)
@@ -90,6 +90,8 @@ REF_NEEDLE_Y = (143.0, 162.0)       # 바늘 흰 몸통이 있는 높이
 REF_NEEDLE_X = 44.7                 # 바늘 흰 부분 평균 x (1번 칸일 때)
 REF_BAR = (107.0, 354.0, 331.0, 339.0)  # 점수 막대: 0점 x, 250점 x, 읽을 높이 위·아래
 REF_MOUSE_Y = 205.0                 # 마우스를 둘 높이 (빨간 실선 아래 천)
+REF_BTN_Y = (414.0, 444.0)          # 왼박음/오른박음 버튼 (누르면 청록색) — 게임이 키를 받은 걸 화면으로 확인
+REF_BTN_X = ((79.0, 160.0), (219.0, 300.0))
 HIT_ROW = 21                        # 띠가 위에서 21번 줄(0부터)에 있을 때 박음질이 됨
 SEE_ROWS = 18                       # 0~17번 줄만 봄 (그 아래는 바늘에 가려질 수 있음)
 NCOL = 10                           # 띠 자리 10개 (칸 k: 노랑 2k, 파랑 2k+1)
@@ -122,6 +124,7 @@ class Keys:
         self.down = {LEFT_KEY: None, RIGHT_KEY: None}     # 누른 시각 (안 누름 = None)
         self.rep = {LEFT_KEY: 0.0, RIGHT_KEY: 0.0}
         self.presses = 0
+        self.log = []                                    # (시각, 키, 누름 True / 뗌 False)
 
     def set(self, key, on, now):
         if on and self.down[key] is None:
@@ -129,9 +132,11 @@ class Keys:
             self.down[key] = now
             self.rep[key] = now + KEY_REPEAT_DELAY
             self.presses += 1
+            self.log.append((now, key, True))
         elif not on and self.down[key] is not None:
             keyboard.release(key)
             self.down[key] = None
+            self.log.append((now, key, False))
 
     def tick(self, now):
         for k, t in self.down.items():
@@ -143,12 +148,14 @@ class Keys:
         return [k for k, t in self.down.items() if t is not None]
 
     def release_all(self):
+        now = time.time()
         for k in list(self.down):
             if self.down[k] is not None:
                 try:
                     keyboard.release(k)
                 except Exception:
                     pass
+                self.log.append((now, k, False))
             self.down[k] = None
 
 
@@ -265,9 +272,10 @@ class Geo:
         self.bar = (L + REF_BAR[0] * s, L + REF_BAR[1] * s,
                     int(round(T + REF_BAR[2] * s)), int(round(T + REF_BAR[3] * s)) + 1)
         self.mouse_y = T + REF_MOUSE_Y * s
-        # 게임 중에 찍을 범위 (천 + 점수 막대)
-        self.crop = (max(0, int(L) - 4), max(0, int(T) - 4),
-                     int(np.ceil(R)) + 4, int(np.ceil(self.bar[3])) + 4)
+        self.by = (int(round(T + REF_BTN_Y[0] * s)), int(round(T + REF_BTN_Y[1] * s)) + 1)
+        self.bx = [(int(round(L + a * s)), int(round(L + b * s)) + 1) for a, b in REF_BTN_X]
+        # 게임 중에 찍을 범위 (천 + 점수 막대 + 버튼)
+        self.crop = (max(0, int(L) - 4), max(0, int(T) - 4), int(np.ceil(R)) + 4, self.by[1] + 4)
 
     def moved(self, dx, dy):
         """좌표 기준을 옮긴 Geo (잘라 찍은 그림용)."""
@@ -300,6 +308,23 @@ class Geo:
         mx = np.maximum(np.maximum(b, g), r)
         mn = np.minimum(np.minimum(b, g), r)
         return ((mx - mn < 26) & (mn > 100) & (mx < 215)).mean() > 0.55
+
+    def buttons(self, img):
+        """[왼박음 눌림?, 오른박음 눌림?] — 버튼이 청록색이면 게임이 키를 받은 것. 모르면 None."""
+        out = []
+        for x0, x1 in self.bx:
+            reg = img[self.by[0]:self.by[1], x0:x1]
+            if reg.size == 0:
+                out.append(None)
+                continue
+            b, g, r = reg.reshape(-1, 3).mean(axis=0)
+            if g - r > 35 and b - r > 40:
+                out.append(True)
+            elif abs(g - r) < 20 and abs(b - r) < 20:
+                out.append(False)
+            else:
+                out.append(None)
+        return out
 
     def needle_lane(self, img):
         """바늘이 있는 칸 (0~4). 못 찾으면 None."""
@@ -449,7 +474,7 @@ class Tracker:
         self._fit()
 
     def _fit(self):
-        ev = [e for e in self.events if e[2] - e[1] < 0.2] or self.events[-1:]
+        ev = [e for e in self.events if e[2] - e[1] < 0.4] or self.events[-1:]
         ks = np.array([e[0] for e in ev], float)
         mids = np.array([(e[1] + e[2]) / 2 for e in ev])
         wts = 1.0 / np.maximum(np.array([e[2] - e[1] for e in ev]), 0.01) ** 2
@@ -528,17 +553,19 @@ def plan_lanes(gain, cur, rem):
 
 # ==================== 한 판 진행 ====================
 
-def focus_game(w):
+def focus_game(w, force=False):
     """키보드 입력이 의장이 창으로 가게 함 (다른 창이 선택돼 있으면 제목줄을 한 번 누름)."""
-    try:
-        act = am._gw.getActiveWindow()
-        if act is None or am._norm(act.title) == am._norm(am._layout["titles"]["card"]):
+    if not force:
+        try:
+            act = am._gw.getActiveWindow()
+            if act is None or am._norm(act.title) == am._norm(am._layout["titles"]["card"]):
+                return
+        except Exception:
             return
-    except Exception:
-        return
     x = w.left + int(w.width * random.uniform(0.25, 0.6))
     y = w.top + max(6, int(w.height * 0.025))
-    print("  의장이 창이 선택돼 있지 않아서 제목줄을 한 번 클릭")
+    if not force:
+        print("  의장이 창이 선택돼 있지 않아서 제목줄을 한 번 클릭")
     am.smooth_move_to(x, y, random.uniform(0.2, 0.32), bow=6)
     time.sleep(random.uniform(0.05, 0.1))
     pyautogui.mouseDown()
@@ -560,29 +587,57 @@ def wait_until(t):
             time.sleep(d - 0.002)
 
 
+# 판이 바뀌어도 기억하는 값 (한 번 맞춘 박음질 줄 / 키 반응 시간은 다음 판에도 씀)
+_learned = {"hit": None, "lat": [], "rb": None}
+
+
 class Sewing:
-    """의장이 창 한 판 동안의 상태 (화면 읽기 / 칸 정하기 / 키)."""
+    """의장이 창 한 판 동안의 상태 (화면 읽기 / 칸 정하기 / 키).
+
+    시간은 두 가지로 봄
+      - 화면 시각: 화면에 띠가 내려가 보이는 때 (찍은 화면 기준)
+      - 키 시각  : 키를 보내야 하는 때 = 화면 시각 - 반응 시간(self.comp)
+        (키를 보내고 그게 화면 버튼 색으로 보일 때까지 걸린 시간을 직접 재서 그만큼 미리 보냄)
+    """
 
     def __init__(self, sct, w):
         self.sct, self.w = sct, w
         self.res = {"score": 0.0, "secs": 0.0, "pen": 0, "presses": 0, "ok": False}
         self.keys = Keys()
         self.mover = Mover()
-        self.pa, self.rb = PRESS_AFTER, RELEASE_BEFORE
+        self.pa = PRESS_AFTER
+        self.rb = _learned["rb"] or RELEASE_BEFORE
         self.jit_pa = self.jit_rb = 0.0
         self.hold_off = 0.0
-        self.scores = deque()
+        self.scores = deque()                 # 최근 0.6초 점수 (빨간 실 확인)
+        self.score_hist = deque()             # 최근 3초 점수 (뗀 뒤 확인)
         self.sc = None
-        self.tf = 0.0
+        self.tf = self.tf_prev = 0.0
+        self.btn = [None, None]
         self.lane = None
         self.target = 2
         self.last_k = None
-        self.hyp = {-1: 0, 0: 0, 1: 0}      # 박음질 줄 보정용: 점수 변화와 맞은 횟수
-        self.iv = None                      # 지금 구간에서 한 키만 누른 동안의 점수 기록
+        self.hyp = {-1: 0, 0: 0, 1: 0}       # 박음질 줄 보정용: 점수 변화와 맞은 횟수
+        self.iv = None                        # 한 버튼만 눌린 동안의 점수 기록 (화면 시각)
         self.stuck = 0
-        self.ends = []                      # 띠 끝에서 뗀 뒤 점수 변화
+        self.ends = []                        # 띠 끝에서 뗀 뒤 점수 변화
         self.pending_end = None
         self.last_dbg = 0.0
+        self.lat = list(_learned["lat"][-10:])  # 키 → 화면 반응 시간 기록
+        self.pend = {}                        # 반응을 기다리는 키 동작 {키: (시각, 누름?)}
+        self.log_i = 0
+        self.noresp = 0
+        self.probes = 0 if len(self.lat) >= 4 else 4
+        self.probe = None
+        self.probe_next = 0.0
+        self.iter_dt = 0.02                   # 한 바퀴(화면 읽기+계산) 걸리는 시간
+        self.dts = []
+
+    @property
+    def comp(self):
+        if len(self.lat) < 2:
+            return 0.0
+        return float(min(0.45, max(0.0, np.median(self.lat[-12:]))))
 
     # ---------- 준비 ----------
     def setup(self):
@@ -608,21 +663,25 @@ class Sewing:
                     save_debug(img, Geo((0, 0, REF_W, 251)), os.path.join(HERE, "sew_debug.png"))
                 return False
             print("  (천을 화면에서 못 찾아서 measure_sew.py 로 잰 모서리를 씀)")
-        print(f"  천 {geo.R - geo.L:.0f}x{geo.B - geo.T:.0f} (배율 {geo.s:.2f}) · 박음질 줄 {geo.hit}"
-              + ("" if geo.line_found else " (빨간 실선 못 찾음 — 기본값)"))
+        hit = _learned["hit"] or geo.hit
+        print(f"  천 {geo.R - geo.L:.0f}x{geo.B - geo.T:.0f} (배율 {geo.s:.2f}) · 박음질 줄 {hit}"
+              + ("" if geo.line_found else " (빨간 실선 못 찾음 — 기본값)")
+              + (f" · 키 반응 {self.comp:.2f}초 (지난 판에서 잰 값)" if len(self.lat) >= 2 else ""))
         if SAVE_DEBUG_SHOT and not _debug_saved and img is not None:
             save_debug(img, geo, os.path.join(HERE, "sew_debug.png"))
             _debug_saved = True
         cx0, cy0, cx1, cy1 = geo.crop
+        cx1, cy1 = min(cx1, w.width), min(cy1, w.height)
         self.g = geo.moved(cx0, cy0)
         self.ox, self.oy = cx0, cy0                 # 창 왼쪽 위 → 잘라 찍는 곳
         self.cw, self.ch = cx1 - cx0, cy1 - cy0
-        self.trk = Tracker(self.g.hit)
+        self.trk = Tracker(hit)
         self.lane = self.g.needle_lane(self.grab())
         self.target = self.lane if self.lane is not None else 2
         focus_game(w)
         x, y = self.mouse_xy(self.target)
         am.smooth_move_to(x, y, random.uniform(0.25, 0.4), bow=8)
+        self.probe_next = time.time() + random.uniform(0.3, 0.8)
         return True
 
     def grab(self):
@@ -635,7 +694,7 @@ class Sewing:
 
     # ---------- 화면 한 장 ----------
     def frame(self):
-        """화면을 읽어 띠/바늘/점수를 갱신. 천이 안 보이면 False."""
+        """화면을 읽어 띠/바늘/점수/버튼을 갱신. 천이 안 보이면 False."""
         ta = time.time()
         img = self.grab()
         tf = (ta + time.time()) / 2
@@ -646,22 +705,89 @@ class Sewing:
         if nl is not None:
             self.lane = nl
         self.sc = self.g.read_score(img)
-        self.tf = tf
+        self.tf_prev, self.tf = self.tf, tf
+        btn = self.g.buttons(img)
+        self.measure_latency(tf, btn)
+        self.btn = btn
         if self.sc is not None:
             self.scores.append((tf, self.sc))
             while self.scores and tf - self.scores[0][0] > 0.6:
                 self.scores.popleft()
+            self.score_hist.append((tf, self.sc))
+            while self.score_hist and tf - self.score_hist[0][0] > 3.0:
+                self.score_hist.popleft()
             self.res["score"] = max(self.res["score"], self.sc)
         return True
 
+    def measure_latency(self, tf, btn):
+        """키를 보낸 뒤 버튼 색이 바뀌어 보일 때까지 걸린 시간 = 키 → 화면 반응 시간."""
+        log = self.keys.log
+        while self.log_i < len(log):
+            t, key, on = log[self.log_i]
+            self.pend[key] = (t, on)
+            self.log_i += 1
+        for c, key in ((0, LEFT_KEY), (1, RIGHT_KEY)):
+            p = self.pend.get(key)
+            if p is None or btn[c] is None:
+                continue
+            t, on = p
+            if tf <= t:
+                continue
+            if btn[c] == on and self.btn[c] is not None and self.btn[c] != on:
+                lo = max(self.tf_prev, t)
+                self.lat = (self.lat + [(lo + tf) / 2 - t])[-20:]
+                del self.pend[key]
+            elif btn[c] == on:
+                del self.pend[key]                 # 이미 그 상태였음 → 못 잼
+            elif tf - t > 1.0:
+                del self.pend[key]                 # 1초가 지나도 버튼이 안 바뀜 = 키가 게임에 안 감
+                if on:
+                    self.noresp += 1
+                    if self.noresp >= 3:
+                        self.noresp = 0
+                        print("  [주의] 키를 눌러도 버튼이 안 바뀜 → 의장이 창을 선택하려고 제목줄 클릭")
+                        self.keys.release_all()
+                        focus_game(self.w, force=True)
+                        self.target = -1              # 마우스를 다시 바늘 칸으로
+
     def times(self, now):
-        k, _ = self.trk.count(now)
+        """키 시각 기준 (틱 번호, 이번 구간 시작, 다음 구간 시작)."""
+        c = self.comp
+        k, _ = self.trk.count(now + c)
+        T_cur = self.trk.phi + k * self.trk.P - c
+        return k, T_cur, T_cur + self.trk.P
+
+    def vis_times(self, t):
+        """화면 시각 기준 (틱 번호, 이번 구간 시작, 다음 구간 시작)."""
+        k, _ = self.trk.count(t)
         T_cur = self.trk.phi + k * self.trk.P
         return k, T_cur, T_cur + self.trk.P
 
+    def score_at(self, t):
+        best = None
+        for (ts, s) in self.score_hist:
+            if ts <= t:
+                best = s
+        return best
+
+    # ---------- 시작할 때 반응 시간 재기 ----------
+    def do_probe(self, now):
+        """점수가 0일 때 키를 살짝 눌러 반응 시간을 잼 (점수 0이라 깎일 게 없음)."""
+        if self.probe is None:
+            if now < self.probe_next:
+                return
+            key = (LEFT_KEY, RIGHT_KEY)[self.probes % 2]
+            self.keys.set(key, True, now)
+            self.probe = (key, now + random.uniform(0.1, 0.16))
+        elif now >= self.probe[1]:
+            self.keys.set(self.probe[0], False, now)
+            self.probe = None
+            self.probes -= 1
+            self.probe_next = now + random.uniform(0.35, 0.7)
+
     # ---------- 구간이 바뀔 때 ----------
     def row_evidence(self, i, k, obs):
-        """띠 자리 i 가 k 구간에 실제로 박혔는지(obs) → 박음질 줄 -1/0/+1 중 어느 게 맞는지 셈.
+        """띠 자리 i 가 (화면 시각) k 구간에 실제로 박혔는지(obs) → 박음질 줄 -1/0/+1 중 맞는 쪽을 셈.
 
         한쪽이 3번 더 맞으면 그 줄로 바꿈. 바꿨으면 True.
         """
@@ -688,9 +814,7 @@ class Sewing:
             if d == 0 and iv["t1"] - iv["t0"] >= 0.25:
                 self.stuck += 1
                 if self.stuck == 4:
-                    print("  [주의] 키를 눌러도 점수가 안 움직임 — 의장이 창이 선택돼 있는지 확인")
-                    self.keys.release_all()
-                    focus_game(self.w)
+                    print("  [주의] 버튼이 눌려도 점수가 안 움직임")
             elif d != 0:
                 self.stuck = 0
         self.iv = None
@@ -701,14 +825,17 @@ class Sewing:
     def check_end(self, now):
         """띠 끝에서 뗀 뒤 점수가 조금씩 깎이면(늦게 뗌) 더 일찍 떼도록 맞춤."""
         pe = self.pending_end
-        if pe is None or now < pe[0] + 0.3:
+        if pe is None or now < pe + self.comp + 0.45:
             return
         self.pending_end = None
-        if self.sc is None or pe[1] is None or self.keys.held():
+        if self.sc is None or self.keys.held() or any(self.btn):
             return
-        self.ends = (self.ends + [self.sc - pe[1]])[-5:]
+        before = self.score_at(pe + self.comp - 0.05)
+        if before is None:
+            return
+        self.ends = (self.ends + [self.sc - before])[-5:]
         if len(self.ends) >= 4 and np.mean(self.ends) < -0.6:
-            self.rb = min(0.16, self.rb + 0.02)
+            self.rb = min(0.25, self.rb + 0.02)
             self.ends = []
             print(f"  [보정] 뗄 때 점수가 조금씩 깎임 → 띠 끝 {self.rb:.2f}초 전에 떼기")
 
@@ -737,15 +864,15 @@ class Sewing:
 
     # ---------- 키 ----------
     def key_states(self, now):
-        """지금 각 키를 누르고 있어야 하는지 + 다음에 키를 바꿀 시각."""
+        """지금 각 키를 누르고 있어야 하는지, 띠 끝이라 떼는 건지, 다음에 키를 바꿀 시각."""
         trk = self.trk
         k, T_cur, T_next = self.times(now)
         lane = self.lane
         ok = (lane is not None and lane == self.target and not self.mover.busy()
               and now >= self.hold_off)
-        wants, nxt = {}, []
+        wants, ends, nxt = {}, {}, []
         for c, key in ((0, LEFT_KEY), (1, RIGHT_KEY)):
-            want = False
+            want = end = False
             if ok:
                 i = 2 * lane + c
                 p0, p1, pm = trk.present(i, k), trk.present(i, k + 1), trk.present(i, k - 1)
@@ -753,27 +880,28 @@ class Sewing:
                 t_off = T_next - self.rb - self.jit_rb
                 if p0:
                     want = (p1 or now < t_off) and (pm or now >= t_on)
+                    end = not p1 and now >= t_off
                     if want and not p1:
                         nxt.append(t_off)
                     if not want and not pm and now < t_on:
                         nxt.append(t_on)
                 elif p1:
                     nxt.append(T_next + self.pa + self.jit_pa)
-            wants[key] = want
+            wants[key], ends[key] = want, end
         nxt = [t for t in nxt if t > now]
-        return wants, (min(nxt) if nxt else None), T_next
+        return wants, ends, (min(nxt) if nxt else None)
 
     def apply_keys(self, now):
-        wants, nxt, T_next = self.key_states(now)
+        wants, ends, nxt = self.key_states(now)
         for key, want in wants.items():
             was = self.keys.down[key] is not None
             self.keys.set(key, want, now)
-            if was and not want:
-                self.pending_end = (T_next if now > T_next - 0.25 else now, self.sc)
+            if was and not want and ends[key]:
+                self.pending_end = now
         self.keys.tick(now)
         return nxt
 
-    def check_penalty(self, now, T_next):
+    def check_penalty(self, now):
         """누르고 있는데 점수가 깎이면(빨간 실) 바로 뗌."""
         if not self.keys.held() or self.sc is None or len(self.scores) < 2:
             return
@@ -782,37 +910,42 @@ class Sewing:
             return
         held = self.keys.held()
         since = now - min(t for t in self.keys.down.values() if t is not None)
+        k, T_cur, T_next = self.times(now)
         self.keys.release_all()
         self.pending_end = None
         self.hold_off = T_next + 0.01
         self.res["pen"] += 1
-        why = "누르자마자" if since < 0.2 else ("떼기 직전에" if T_next - now < 0.2 else "누르는 중간에")
-        print(f"  [빨간 실] {why} 점수가 깎임 → 바로 뗌")
+        kv, Tv, _ = self.vis_times(self.tf - 0.04)
+        print(f"  [빨간 실] 점수가 깎여서 바로 뗌 (깎이기 시작: 화면상 틱 뒤 {self.tf - 0.04 - Tv:.2f}초쯤"
+              f" · 반응 {self.comp:.2f}초)")
         # 깎였다 = 그 구간에 띠가 없었다 → 박음질 줄 확인에 씀. 줄이 맞으면 타이밍을 조금 보정
+        lit = [c for c in (0, 1) if self.btn[c]]
+        cs = lit if len(lit) == 1 else ([0 if held[0] == LEFT_KEY else 1] if len(held) == 1 else [])
         moved = False
-        if len(held) == 1 and self.lane is not None:
-            i = 2 * self.lane + (0 if held[0] == LEFT_KEY else 1)
-            # 깎이기 시작한 때 = 누른 순간 또는 틱 순간 → 알아챈 지금보다 조금 앞 (같은 구간)
-            moved = self.row_evidence(i, self.trk.count(now - 0.04)[0], False)
+        if cs and self.lane is not None:
+            moved = self.row_evidence(2 * self.lane + cs[0], kv, False)
         if not moved:
             if since < 0.2:
                 self.pa = min(0.12, self.pa + 0.02)
             elif T_next - now < 0.2:
-                self.rb = min(0.16, self.rb + 0.02)
+                self.rb = min(0.25, self.rb + 0.02)
         self.scores.clear()
         self.scores.append((self.tf, self.sc))
 
-    def record_single(self, k, T_cur, T_next):
-        """한 키만 누르고 있는 동안의 점수 변화 기록 (박음질 줄 확인용)."""
-        held = self.keys.held()
-        if len(held) == 2:
+    def record_single(self):
+        """버튼 하나만 눌려 보이는 동안의 점수 변화 기록 (화면 시각 — 박음질 줄 확인용)."""
+        b = self.btn
+        if b[0] is None or b[1] is None or self.sc is None or self.lane is None:
+            return
+        if b[0] and b[1]:
             self.iv = None
             return
-        if len(held) != 1 or self.sc is None or self.lane is None:
+        if not (b[0] or b[1]):
             return
+        k, T_cur, T_next = self.vis_times(self.tf)
         if not (T_cur + 0.1 <= self.tf <= T_next - 0.08):
             return
-        i = 2 * self.lane + (0 if held[0] == LEFT_KEY else 1)
+        i = 2 * self.lane + (0 if b[0] else 1)
         iv = self.iv
         if iv is None or iv["i"] != i or iv["k"] != k:
             self.iv = {"i": i, "k": k, "t0": self.tf, "s0": self.sc, "t1": self.tf, "s1": self.sc, "n": 1}
@@ -826,6 +959,8 @@ class Sewing:
             return self.res
         w = self.w
         lost = 0
+        last_vk = None
+        t_loop = time.time()
         try:
             while running and alive:
                 if not window_shown(w):
@@ -842,24 +977,39 @@ class Sewing:
                     continue
                 lost = 0
                 now = time.time()
+                if self.probes and self.sc is not None and self.sc < 0.5:
+                    self.do_probe(now)
+                    time.sleep(LOOP_DT)
+                    continue
+                if self.probe is not None:                 # 점수가 생기면 재기 그만
+                    self.keys.set(self.probe[0], False, now)
+                    self.probe = None
                 if not self.trk.ready():
                     self.mover.step(now)
                     time.sleep(LOOP_DT)
                     continue
+                kv = self.vis_times(self.tf)[0]
+                if kv != last_vk:
+                    last_vk = kv
+                    self.new_interval(kv)
+                self.record_single()
                 k, T_cur, T_next = self.times(now)
-                if k != self.last_k:
-                    self.new_interval(k)
                 self.check_end(now)
                 gain = self.plan(k, T_next, now)
                 nxt = self.apply_keys(now)
-                self.record_single(k, T_cur, T_next)
-                self.check_penalty(now, T_next)
+                self.check_penalty(now)
                 if DEBUG and now - self.last_dbg > 0.5:
                     self.last_dbg = now
                     print(f"    틱{k} 칸{self.lane}->{self.target} 점수 {self.sc} 누름 {self.keys.held()} "
-                          f"앞으로 {[int(x) for x in gain.sum(axis=0)[:8]]}")
-                # 키를 바꿀 시각이 곧이면 그때까지 기다렸다가 정확히 누르고/뗌
-                if nxt is not None and nxt - time.time() < 0.03:
+                          f"버튼 {self.btn} 반응 {self.comp:.2f}")
+                # 한 바퀴 걸리는 시간 (화면 읽기가 느린 컴퓨터면 길어짐)
+                t_now = time.time()
+                dt = t_now - t_loop
+                t_loop = t_now
+                self.dts.append(dt)
+                self.iter_dt = 0.8 * self.iter_dt + 0.2 * min(dt, 0.3)
+                # 키를 바꿀 시각이 다음 화면 읽기보다 먼저 오면, 그때까지 기다렸다가 정확히 누르고/뗌
+                if nxt is not None and nxt - time.time() < max(0.03, 1.5 * self.iter_dt + 0.01):
                     wait_until(nxt + 0.0005)
                     if window_shown(w):
                         self.mover.step(time.time())
@@ -868,6 +1018,15 @@ class Sewing:
                     time.sleep(LOOP_DT)
         finally:
             self.keys.release_all()
+        if len(self.lat) >= 2:
+            _learned["lat"] = self.lat[-12:]
+        if self.res["score"] > 50:
+            _learned["hit"] = self.trk.hit
+            _learned["rb"] = self.rb
+        dts = np.array(self.dts[5:] or [0.0])
+        print(f"  (키 반응 {self.comp:.2f}초 · 화면 한 바퀴 평균 {dts.mean() * 1000:.0f}ms"
+              f" 최대 {dts.max() * 1000:.0f}ms · 박음질 줄 {self.trk.hit}"
+              f" · 누름 지연 {self.pa:.2f} · 뗌 여유 {self.rb:.2f})")
         self.res.update(secs=time.time() - t_start, presses=self.keys.presses,
                         ok=self.res["score"] >= 235)
         return self.res
