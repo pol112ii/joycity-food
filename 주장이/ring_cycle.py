@@ -771,17 +771,16 @@ def locate_near(sct, c, radius):
     return min(cands, key=lambda q: (q[0] - c[0]) ** 2 + (q[1] - c[1]) ** 2)
 
 
-def chase_click(sct, cart, body, extra=(0, 0), limit=2.5):
+def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6):
     """걸어 다니는 리어카맨을 따라가서 누름 → (누른 x, y, 리어카맨 위치) 또는 None(놓침).
 
     '방금 찍은 화면'에서 찾은 위치로만 누름 — 예전 위치로는 절대 안 누름.
     (예전 위치를 누르면 리어카맨은 이미 지나가고 바닥 재료가 눌려서 주워짐)
       1) 리어카맨 쪽으로 부드럽게 다가감
       2) 짧은 간격으로 계속 다시 찾으면서 커서를 몸통 위로 맞춤 (따라감)
-      3) 방금 찾은 몸통 위에 커서가 올라가 있는 순간 누름
+      3) 방금 찾은 몸통(+ 누르는 순간까지 걸어갈 만큼) 위에 커서가 있으면 그때 누름
     """
     k = scale()
-    tol = max(4, int(round(6 * k)))           # 커서와 몸통이 이만큼 안이면 누름
     p = locate_near(sct, cart, 250)
     if p is None:
         return None
@@ -794,11 +793,14 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5):
     am.smooth_move_to(tx, ty, random.uniform(0.18, 0.28), bow=6)
     last, lt = p, time.time()
     vx = vy = 0.0
+    look = 0.03                               # 화면을 찍어서 찾는 데 걸리는 시간 (계속 잼)
     misses = 0
     t0 = time.time()
     while running and alive and time.time() - t0 < limit:
+        ts = time.time()
         q = locate_near(sct, last, int(90 * k) + 30)
         now = time.time()
+        look = 0.7 * look + 0.3 * (now - ts)
         if q is None:                         # 잠깐 가려졌을 수 있음 → 조금 기다렸다 다시
             misses += 1
             if misses >= 6:
@@ -806,21 +808,26 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5):
             time.sleep(0.03)
             continue
         misses = 0
-        dt = now - lt
+        tq = (ts + now) / 2                   # 이 위치가 찍힌 시각
+        dt = tq - lt
         if dt > 0.005:
             nvx, nvy = (q[0] - last[0]) / dt, (q[1] - last[1]) / dt
-            if (nvx * nvx + nvy * nvy) ** 0.5 > 500:   # 다른 글자로 튀었으면 속도는 무시
+            if (nvx * nvx + nvy * nvy) ** 0.5 > 600:   # 다른 글자로 튀었으면 속도는 무시
                 nvx = nvy = 0.0
             vx, vy = 0.5 * vx + 0.5 * nvx, 0.5 * vy + 0.5 * nvy
-        last, lt = q, now
-        tx, ty = target(q, vx, vy, 0.05)      # 누르기까지 걸리는 아주 짧은 시간만큼 앞
+        last, lt = q, tq
+        # 지금 누르면 누르는 순간 몸통이 있을 자리
+        cx, cy = target(q, vx, vy, (now - tq) + 0.03)
         mx, my = pyautogui.position()
-        if abs(mx - tx) <= tol and abs(my - ty) <= tol:
+        if abs(mx - cx) <= tol and abs(my - cy) <= tol:
             pyautogui.mouseDown()
             time.sleep(random.uniform(0.04, 0.07))
             pyautogui.mouseUp()
             return mx, my, q
-        am.smooth_move_to(tx, ty, random.uniform(0.035, 0.06), bow=0)
+        # 다음에 다시 볼 때쯤 몸통이 있을 자리로 커서를 옮김
+        d = random.uniform(0.03, 0.05)
+        nx, ny = target(q, vx, vy, (now - tq) + d + look)
+        am.smooth_move_to(nx, ny, d, bow=0)
     return None
 
 
@@ -868,11 +875,12 @@ def sell_all(sct):
     # 몸통 주변을 조금씩 다르게 눌러봄 (가운데 → 조금 위 → 조금 아래). 몸통 크기에 맞춰 비율로
     dy = abs(off["off_y"]) * k
     spots = [(0, 0), (0, -int(0.18 * dy)), (int(0.1 * dy), int(0.18 * dy))]
+    tol = max(5, int(0.12 * dy))              # 커서가 몸통에서 이만큼 안이면 누름
     clicks = []                               # 이번 리어카맨을 누른 자리 (안 움직이는지 보려고)
     opened = False
     for attempt in range(5):
         for sx, sy in spots:
-            res = chase_click(sct, cart, body, (sx, sy))
+            res = chase_click(sct, cart, body, (sx, sy), tol=tol)
             if res is None:
                 # 놓침 → 화면 전체에서 다시 찾음 (방금 보던 곳에서 가까운 것)
                 found = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), _bad_carts)
