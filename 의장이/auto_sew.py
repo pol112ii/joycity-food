@@ -792,7 +792,8 @@ class Sewing:
         moved = False
         if len(held) == 1 and self.lane is not None:
             i = 2 * self.lane + (0 if held[0] == LEFT_KEY else 1)
-            moved = self.row_evidence(i, self.trk.count(now - 0.08)[0], False)
+            # 깎이기 시작한 때 = 누른 순간 또는 틱 순간 → 알아챈 지금보다 조금 앞 (같은 구간)
+            moved = self.row_evidence(i, self.trk.count(now - 0.04)[0], False)
         if not moved:
             if since < 0.2:
                 self.pa = min(0.12, self.pa + 0.02)
