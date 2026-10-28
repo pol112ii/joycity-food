@@ -810,6 +810,8 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6):
         misses = 0
         tq = (ts + now) / 2                   # 이 위치가 찍힌 시각
         dt = tq - lt
+        # 지난번 속도로 예상한 자리와 실제 자리 차이 — 크면 방금 방향을 틀었거나 멈춘 것
+        jerk = abs(last[0] + vx * dt - q[0]) + abs(last[1] + vy * dt - q[1])
         if dt > 0.005:
             nvx, nvy = (q[0] - last[0]) / dt, (q[1] - last[1]) / dt
             if (nvx * nvx + nvy * nvy) ** 0.5 > 600:   # 다른 글자로 튀었으면 속도는 무시
@@ -819,7 +821,7 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6):
         # 지금 누르면 누르는 순간 몸통이 있을 자리
         cx, cy = target(q, vx, vy, (now - tq) + 0.03)
         mx, my = pyautogui.position()
-        if abs(mx - cx) <= tol and abs(my - cy) <= tol:
+        if abs(mx - cx) <= tol and abs(my - cy) <= tol and jerk <= tol:
             pyautogui.mouseDown()
             time.sleep(random.uniform(0.04, 0.07))
             pyautogui.mouseUp()
