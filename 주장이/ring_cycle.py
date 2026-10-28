@@ -70,6 +70,9 @@ SESSION_MINS = (40, 90)             # 한 번 앉아서 하는 시간
 BREAK_MINS = (10, 25)               # 세션이 끝나면 쉬는 시간 (제작 창 닫고 자리 비움)
 BIG_EVERY_HOURS = (3, 4)            # 이만큼마다 한 번은 크게 쉼 (밥 먹는 것처럼)
 BIG_MINS = (40, 90)                 #   그때 쉬는 시간
+SHORT_EVERY = (1, 5)                # 짧은 쉼: 이 판수마다 (매번 랜덤)
+SHORT_SECS = (10, 60)               #   한 번에 이만큼(초)
+AFTER_SELL_SECS = (5, 30)           # 반지를 팔고 나서 잠깐 쉼(초)
 BREATH_SECS = (1, 4)                # 판 사이 숨 고르기 (매 판)
 BREATH_LONG = (5, 15)               #   가끔은 이만큼
 BREATH_LONG_CHANCE = 0.12           #   그 '가끔'의 확률
@@ -587,6 +590,7 @@ def _new_session(now=None):
     now = now or time.time()
     length = random.uniform(*SESSION_MINS) * 60
     _rest["start"], _rest["len"] = now, length
+    _rest["games"], _rest["short_at"] = 0, random.randint(*SHORT_EVERY)
     n = random.randint(*DISTRACT_PER_SESSION)
     _rest["distract"] = sorted(now + random.uniform(0.1, 0.9) * length for _ in range(n))
     _rest.setdefault("big_at", now + random.uniform(*BIG_EVERY_HOURS) * 3600)
@@ -706,9 +710,15 @@ def maybe_rest(sct=None):
             _away(sct, "판 사이")
             return
     tired = 1 + FATIGUE * _tired()
+    _rest["games"] += 1
     if _rest["distract"] and now >= _rest["distract"][0]:
         _rest["distract"].pop(0)
         rest_for(_skewed(*DISTRACT_SECS) * tired, "딴짓", nudge=True)
+        _rest["games"], _rest["short_at"] = 0, random.randint(*SHORT_EVERY)
+        return
+    if _rest["games"] >= _rest["short_at"]:
+        rest_for(_skewed(*SHORT_SECS) * tired, f"짧은 쉼 ({_rest['games']}판 만들었음)")
+        _rest["games"], _rest["short_at"] = 0, random.randint(*SHORT_EVERY)
         return
     if random.random() < BREATH_LONG_CHANCE * tired:
         rest_for(_skewed(*BREATH_LONG) * tired, "잠깐 멈칫")
@@ -718,9 +728,15 @@ def maybe_rest(sct=None):
 
 def after_sell_rest(sct):
     """반지를 판 직후 — 자리 비울 때가 됐으면 여기서 쉼 (한 묶음 끝내고 쉬는 것처럼)."""
-    if REST and "start" in _rest and _away_due(time.time()):
+    if not REST:
+        return
+    if "start" not in _rest:
+        _new_session()
+    if _away_due(time.time()):
         _rest.pop("due_since", None)
         _away(sct, "판 직후")
+    else:
+        rest_for(_skewed(*AFTER_SELL_SECS) * (1 + FATIGUE * _tired()), "팔고 나서 잠깐")
 
 
 def craft_all(sct):
