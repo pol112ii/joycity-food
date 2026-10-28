@@ -588,7 +588,35 @@ def wait_until(t):
 
 
 # 판이 바뀌어도 기억하는 값 (한 번 맞춘 박음질 줄 / 키 반응 시간은 다음 판에도 씀)
+# 프로그램을 껐다 켜도 이어 쓰도록 sew_learn.json 에 저장함
+LEARN_FILE = os.path.join(HERE, "sew_learn.json")
 _learned = {"hit": None, "lat": [], "rb": None}
+
+
+def load_learned():
+    try:
+        import json
+        with open(LEARN_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        if d.get("lat") is not None:
+            _learned["lat"] = [float(d["lat"])] * 3
+        if d.get("hit"):
+            _learned["hit"] = int(d["hit"])
+        if d.get("rb"):
+            _learned["rb"] = float(d["rb"])
+        print(f"지난번에 맞춘 값: 키 반응 {d.get('lat', 0):.2f}초 · 박음질 줄 {d.get('hit')}")
+    except Exception:
+        pass
+
+
+def save_learned():
+    try:
+        import json
+        lat = float(np.median(_learned["lat"])) if _learned["lat"] else None
+        with open(LEARN_FILE, "w", encoding="utf-8") as f:
+            json.dump({"lat": lat, "hit": _learned["hit"], "rb": _learned["rb"]}, f)
+    except Exception:
+        pass
 
 
 class Sewing:
@@ -627,9 +655,6 @@ class Sewing:
         self.pend = {}                        # 반응을 기다리는 키 동작 {키: (시각, 누름?)}
         self.log_i = 0
         self.noresp = 0
-        self.probes = 0 if len(self.lat) >= 4 else 4
-        self.probe = None
-        self.probe_next = 0.0
         self.iter_dt = 0.02                   # 한 바퀴(화면 읽기+계산) 걸리는 시간
         self.dts = []
 
@@ -681,7 +706,6 @@ class Sewing:
         focus_game(w)
         x, y = self.mouse_xy(self.target)
         am.smooth_move_to(x, y, random.uniform(0.25, 0.4), bow=8)
-        self.probe_next = time.time() + random.uniform(0.3, 0.8)
         return True
 
     def grab(self):
@@ -770,21 +794,6 @@ class Sewing:
                 best = s
         return best
 
-    # ---------- 시작할 때 반응 시간 재기 ----------
-    def do_probe(self, now):
-        """점수가 0일 때 키를 살짝 눌러 반응 시간을 잼 (점수 0이라 깎일 게 없음)."""
-        if self.probe is None:
-            if now < self.probe_next:
-                return
-            key = (LEFT_KEY, RIGHT_KEY)[self.probes % 2]
-            self.keys.set(key, True, now)
-            self.probe = (key, now + random.uniform(0.1, 0.16))
-        elif now >= self.probe[1]:
-            self.keys.set(self.probe[0], False, now)
-            self.probe = None
-            self.probes -= 1
-            self.probe_next = now + random.uniform(0.35, 0.7)
-
     # ---------- 구간이 바뀔 때 ----------
     def row_evidence(self, i, k, obs):
         """띠 자리 i 가 (화면 시각) k 구간에 실제로 박혔는지(obs) → 박음질 줄 -1/0/+1 중 맞는 쪽을 셈.
@@ -870,14 +879,16 @@ class Sewing:
         lane = self.lane
         ok = (lane is not None and lane == self.target and not self.mover.busy()
               and now >= self.hold_off)
+        # 키 반응 시간을 아직 못 쟀으면(첫 띠) 조금 늦게 누르고 일찍 떼서 빨간 실이 안 나오게
+        pa, rb = (self.pa, self.rb) if len(self.lat) >= 2 else (max(self.pa, 0.1), max(self.rb, 0.3))
         wants, ends, nxt = {}, {}, []
         for c, key in ((0, LEFT_KEY), (1, RIGHT_KEY)):
             want = end = False
             if ok:
                 i = 2 * lane + c
                 p0, p1, pm = trk.present(i, k), trk.present(i, k + 1), trk.present(i, k - 1)
-                t_on = T_cur + self.pa + self.jit_pa
-                t_off = T_next - self.rb - self.jit_rb
+                t_on = T_cur + pa + self.jit_pa
+                t_off = T_next - rb - self.jit_rb
                 if p0:
                     want = (p1 or now < t_off) and (pm or now >= t_on)
                     end = not p1 and now >= t_off
@@ -886,7 +897,7 @@ class Sewing:
                     if not want and not pm and now < t_on:
                         nxt.append(t_on)
                 elif p1:
-                    nxt.append(T_next + self.pa + self.jit_pa)
+                    nxt.append(T_next + pa + self.jit_pa)
             wants[key], ends[key] = want, end
         nxt = [t for t in nxt if t > now]
         return wants, ends, (min(nxt) if nxt else None)
@@ -977,13 +988,6 @@ class Sewing:
                     continue
                 lost = 0
                 now = time.time()
-                if self.probes and self.sc is not None and self.sc < 0.5:
-                    self.do_probe(now)
-                    time.sleep(LOOP_DT)
-                    continue
-                if self.probe is not None:                 # 점수가 생기면 재기 그만
-                    self.keys.set(self.probe[0], False, now)
-                    self.probe = None
                 if not self.trk.ready():
                     self.mover.step(now)
                     time.sleep(LOOP_DT)
@@ -1023,6 +1027,7 @@ class Sewing:
         if self.res["score"] > 50:
             _learned["hit"] = self.trk.hit
             _learned["rb"] = self.rb
+        save_learned()
         dts = np.array(self.dts[5:] or [0.0])
         print(f"  (키 반응 {self.comp:.2f}초 · 화면 한 바퀴 평균 {dts.mean() * 1000:.0f}ms"
               f" 최대 {dts.max() * 1000:.0f}ms · 박음질 줄 {self.trk.hit}"
@@ -1187,6 +1192,7 @@ def worker():
             alive = False
             return
         print("재료:", ", ".join(f"{n} x{c}" for n, c in RECIPE))
+        load_learned()
         print("준비 완료 — F8 로 시작")
         games = wins = fails = 0
         with mss.mss() as sct:
