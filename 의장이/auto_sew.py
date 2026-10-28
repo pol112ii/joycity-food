@@ -1,0 +1,1113 @@
+# -*- coding: utf-8 -*-
+"""
+의장이(재봉틀) 자동 — 재료 넣기 → 시작 → 박음질 → 반복.
+
+■ 게임 (영상으로 확인한 것)
+  - 회색 천에 세로 칸이 5개. 칸마다 노란 띠(왼박음) 자리와 파란 띠(오른박음) 자리가 있음
+  - 띠는 위에서 0.5초마다 한 줄씩 내려옴
+  - 바늘 두 개는 마우스 좌우 위치를 따라 칸 단위로 움직임
+  - 띠가 빨간 실선(바늘)에 걸쳐 있는 동안 그 색 키를 누르고 있으면 점수가 오름
+  - 띠가 없는데 누르고 있으면 빨간 실이 나오고 점수가 깎임
+  - 250점이 되면 창이 사라지고 끝 (못 채우면 재료만 없어짐)
+
+■ 이 봇이 하는 일
+  - 내려오는 띠를 줄 단위로 기억하고, 줄이 내려가는 순간(0.5초마다)을 화면으로 정확히 맞춤
+  - 띠가 바늘에 닿는 순간 바로 뒤에 누르고, 띠가 끝나는 순간 바로 앞에 뗌
+  - 앞으로 10초 동안 가장 많이 박을 수 있는 칸 순서를 계산해서 마우스를 미리 옮김
+  - 점수 막대를 계속 보면서, 점수가 깎이면 바로 떼고 타이밍을 스스로 맞춤
+
+■ 처음 한 번
+  1. py measure_sew.py              (창 위치 재기 — F1)
+  2. 제작 창을 띄우고  py auto_match.py 캡처  → items 폴더의 재료 그림 이름 바꾸기
+  3. 아래 RECIPE 에 재료 이름과 개수 적기
+■ 실행:  py auto_sew.py   →  F8 시작/정지,  F9 종료
+"""
+
+import os
+import sys
+import time
+import random
+import threading
+from collections import deque
+
+try:
+    import numpy as np
+    import mss
+    import pyautogui
+    import keyboard
+except ImportError as e:
+    print("[에러] 필요한 프로그램이 없습니다:", e)
+    print("cmd 에서:  py -m pip install mss numpy pyautogui keyboard pillow pygetwindow")
+    input("\n엔터를 누르면 창이 닫힙니다...")
+    sys.exit(1)
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import auto_match as am        # 제작 창 열기 / 재료 넣기 / 창 찾기는 주장이 봇 것을 그대로 씀
+
+# ==================== 설정 ====================
+RECIPE = [("재료1", 1), ("재료2", 1), ("재료3", 1)]   # ← 재료 이름(items 폴더 그림 이름)과 개수
+NUM_SLOTS = 3                       # 제작 창 재료 칸 수
+LEFT_KEY = ","                      # 왼박음(노랑) = 키보드 < 키 (Shift 없이)
+RIGHT_KEY = "."                     # 오른박음(파랑) = 키보드 > 키 (Shift 없이)
+MAX_GAMES = 0                       # 이만큼 하면 멈춤 (0 = 재료 떨어질 때까지 계속)
+GAME_TIMEOUT = 180                  # 한 판 최대 시간(초). 보통은 그 전에 창이 사라짐
+
+# 박음질 타이밍 (띠가 한 줄 내려가는 순간 = '틱', 0.5초마다)
+PRESS_AFTER = 0.03                  # 띠가 바늘에 닿는 틱보다 이만큼(초) 늦게 누름 (일찍 누르면 빨간 실)
+RELEASE_BEFORE = 0.08               # 띠가 끝나는 틱보다 이만큼(초) 먼저 뗌 (늦게 떼면 빨간 실)
+TIMING_JITTER = 0.015               # 누르고 떼는 시점을 매번 이만큼 안에서 살짝 다르게 (사람처럼)
+KEY_REPEAT_DELAY = 0.5              # 꾹 누를 때 윈도우 자동 반복 흉내 (처음 누른 뒤 반복 시작까지)
+KEY_REPEAT_EVERY = 0.033            #   반복 간격
+MOVE_TIME = (0.08, 0.20)            # 바늘을 옮길 때 마우스 이동 시간(초): 옆 칸 ~ 끝에서 끝
+LOOP_DT = 0.004                     # 화면 보는 간격(초)
+DEBUG = False                       # True 면 게임 중 상태를 자주 찍음
+SAVE_DEBUG_SHOT = True              # 판 시작 때 화면 인식 결과를 sew_debug.png 로 저장 (문제 생기면 보내주세요)
+
+# 사람처럼 쉬기 (판과 판 사이에만 쉼. REST = False 면 안 쉼)
+REST = True
+BREATH_SECS = (1.5, 5)              # 판 끝나고 다음 판까지 잠깐
+SHORT_EVERY = (1, 5)                # 짧은 쉼: 이 판수마다 한 번
+SHORT_SECS = (10, 60)               #   쉬는 시간(초)
+SESSION_MINS = (40, 90)             # 한 번 앉아서 하는 시간(분) → 끝나면 자리 비움
+BREAK_MINS = (10, 25)               #   자리 비움 시간(분) — 제작 창을 닫고 쉼
+BIG_EVERY_HOURS = (3, 4)            # 이만큼마다 한 번은 크게 쉼
+BIG_MINS = (40, 90)                 #   크게 쉬는 시간(분)
+FAIL_WAIT = 60                      # 재료 넣기 등이 실패하면 이만큼 기다렸다 다시
+FAIL_STOP = 5                       # 연속 이만큼 실패하면 멈춤
+
+running = False
+alive = True
+
+# ----- 영상에서 잰 게임 안 배치 (회색 천 상자 왼쪽 위 기준, 천 폭 379 일 때 픽셀) -----
+REF_W = 379.0                       # 회색 천 폭
+REF_YCOL0, REF_BCOL0 = 20.0, 57.0   # 1번 칸 노란 띠 / 파란 띠 가운데 x
+REF_STEP = 75.0                     # 칸 간격
+REF_CLIP = 5.0                      # 띠가 처음 나타나는 높이 (0번 줄 위쪽)
+REF_ROW = 7.5                       # 한 줄 높이 (0.5초마다 이만큼 내려옴)
+REF_LINE_ROWS = 21.87               # 빨간 실선 높이 (줄 단위) — 화면에서 못 찾을 때만 씀
+REF_NEEDLE_Y = (143.0, 162.0)       # 바늘 흰 몸통이 있는 높이
+REF_NEEDLE_X = 44.7                 # 바늘 흰 부분 평균 x (1번 칸일 때)
+REF_BAR = (107.0, 354.0, 331.0, 339.0)  # 점수 막대: 0점 x, 250점 x, 읽을 높이 위·아래
+REF_MOUSE_Y = 205.0                 # 마우스를 둘 높이 (빨간 실선 아래 천)
+HIT_ROW = 21                        # 띠가 위에서 21번 줄(0부터)에 있을 때 박음질이 됨
+SEE_ROWS = 18                       # 0~17번 줄만 봄 (그 아래는 바늘에 가려질 수 있음)
+NCOL = 10                           # 띠 자리 10개 (칸 k: 노랑 2k, 파랑 2k+1)
+OFF = 700                           # 줄 기억 배열에서 0번의 위치
+
+
+# ==================== 공통 ====================
+
+def shot(sct, left, top, w, h):
+    s = sct.grab({"left": int(left), "top": int(top), "width": int(w), "height": int(h)})
+    return np.asarray(s)[:, :, :3].astype(np.int16)
+
+
+def window_shown(w):
+    try:
+        return am._really_shown(w)
+    except Exception:
+        return False
+
+
+def find_game_win(ignore=()):
+    ws = am.find_windows("card", ignore=ignore)
+    return ws[0] if ws else None
+
+
+class Keys:
+    """왼박음/오른박음 키를 꾹 누르기/떼기 (꾹 누를 때 윈도우 자동 반복도 흉내)."""
+
+    def __init__(self):
+        self.down = {LEFT_KEY: None, RIGHT_KEY: None}     # 누른 시각 (안 누름 = None)
+        self.rep = {LEFT_KEY: 0.0, RIGHT_KEY: 0.0}
+        self.presses = 0
+
+    def set(self, key, on, now):
+        if on and self.down[key] is None:
+            keyboard.press(key)
+            self.down[key] = now
+            self.rep[key] = now + KEY_REPEAT_DELAY
+            self.presses += 1
+        elif not on and self.down[key] is not None:
+            keyboard.release(key)
+            self.down[key] = None
+
+    def tick(self, now):
+        for k, t in self.down.items():
+            if t is not None and now >= self.rep[k]:
+                keyboard.press(k)                         # 꾹 누르고 있을 때의 자동 반복 신호
+                self.rep[k] = now + KEY_REPEAT_EVERY
+
+    def held(self):
+        return [k for k, t in self.down.items() if t is not None]
+
+    def release_all(self):
+        for k in list(self.down):
+            if self.down[k] is not None:
+                try:
+                    keyboard.release(k)
+                except Exception:
+                    pass
+            self.down[k] = None
+
+
+class Mover:
+    """마우스를 기다리지 않고(non-blocking) 조금씩 옮김 — 옮기는 동안에도 화면을 계속 봄."""
+
+    def __init__(self):
+        self.job = None
+
+    def go(self, x, y, now, lanes=1):
+        mx, my = pyautogui.position()
+        if abs(x - mx) + abs(y - my) < 2:
+            self.job = None
+            return
+        lo, hi = MOVE_TIME
+        dur = (lo + (hi - lo) * min(1.0, (lanes - 1) / 3.0)) * random.uniform(0.85, 1.15)
+        bow = random.uniform(-1, 1) * min(10.0, abs(x - mx) * 0.06)
+        self.job = (mx, my, x, y, now, dur, bow)
+
+    def busy(self):
+        return self.job is not None
+
+    def step(self, now):
+        if self.job is None:
+            return
+        sx, sy, x, y, t0, dur, bow = self.job
+        t = min(1.0, (now - t0) / dur)
+        e = t * t * (3 - 2 * t)
+        pyautogui.moveTo(int(round(sx + (x - sx) * e)),
+                         int(round(sy + (y - sy) * e + bow * 4 * e * (1 - e))))
+        if t >= 1.0:
+            self.job = None
+
+
+# ==================== 게임 화면 읽기 ====================
+
+def find_fabric(img):
+    """의장이 창 화면에서 회색 천(띠가 내려오는 곳)의 상자 (L, T, R, B). 못 찾으면 None."""
+    b, g, r = img[..., 0], img[..., 1], img[..., 2]
+    mx = np.maximum(np.maximum(b, g), r)
+    mn = np.minimum(np.minimum(b, g), r)
+    gray = (mx - mn < 26) & (mn > 100) & (mx < 215)
+    h, w = gray.shape
+    rows = gray.mean(axis=1) > 0.35
+    gap_max = max(4, int(h * 0.04))             # 빨간 실선 때문에 끊긴 곳은 이어 붙임
+    best, y = None, 0
+    while y < h:
+        if not rows[y]:
+            y += 1
+            continue
+        s = last = y
+        while y < h and y - last <= gap_max:
+            if rows[y]:
+                last = y
+            y += 1
+        if best is None or last + 1 - s > best[1] - best[0]:
+            best = (s, last + 1)
+    if best is None:
+        return None
+    T, B = best
+    cols = np.nonzero(gray[T:B].mean(axis=0) > 0.5)[0]
+    if len(cols) < 20:
+        return None
+    L, R = int(cols.min()), int(cols.max()) + 1
+    if R - L < 0.45 * w or not 0.58 < (B - T) / (R - L) < 0.76:
+        return None
+    return float(L), float(T), float(R), float(B)
+
+
+def find_line(img, L, R, ya, yb):
+    """빨간 실선(바늘이 박는 가로줄)의 가운데 높이."""
+    ya, yb = max(0, int(ya)), min(img.shape[0], int(yb))
+    reg = img[ya:yb, int(L) + 2:int(R) - 2]
+    if reg.size == 0:
+        return None
+    b, g, r = reg[..., 0], reg[..., 1], reg[..., 2]
+    red = (r > 110) & (r > g + 60) & (r > b + 60)
+    rows = np.nonzero(red.mean(axis=1) > 0.6)[0]
+    if len(rows) == 0:
+        return None
+    return ya + float(rows.mean()) + 0.5
+
+
+class Geo:
+    """천 상자 하나로 정해지는 게임 안 좌표 (창을 찍은 그림 기준)."""
+
+    def __init__(self, box, line=None):
+        L, T, R, B = box
+        s = (R - L) / REF_W
+        self.box, self.L, self.T, self.R, self.B, self.s = box, L, T, R, B, s
+        self.rh = REF_ROW * s
+        self.clip = T + REF_CLIP * s
+        self.line_found = line is not None
+        self.line = line if line is not None else self.clip + REF_LINE_ROWS * self.rh
+        hit = int(np.floor((self.line - self.clip) / self.rh - 0.45))
+        self.hit = hit if HIT_ROW - 2 <= hit <= HIT_ROW + 2 else HIT_ROW
+        hw = max(1, int(round(3.0 * s)))
+        self.cx = []
+        for k in range(5):
+            for c0 in (REF_YCOL0, REF_BCOL0):
+                x = int(round(L + (c0 + REF_STEP * k - 0.25) * s))
+                self.cx.append((x - hw, x + hw + 1))
+        self.ya = int(np.floor(self.clip))
+        r0, r1 = [], []
+        for r in range(SEE_ROWS):
+            a = int(round(self.clip + (r + 0.25) * self.rh)) - self.ya
+            b = max(a + 1, int(round(self.clip + (r + 0.75) * self.rh)) - self.ya)
+            r0.append(a)
+            r1.append(b)
+        self.r0, self.r1 = np.array(r0), np.array(r1)
+        self.yb = self.ya + int(self.r1.max()) + 1
+        self.need = [0.4 * (self.r1 - self.r0) * (x1 - x0) for (x0, x1) in self.cx]
+        self.ny = (int(round(T + REF_NEEDLE_Y[0] * s)), int(round(T + REF_NEEDLE_Y[1] * s)) + 1)
+        self.bar = (L + REF_BAR[0] * s, L + REF_BAR[1] * s,
+                    int(round(T + REF_BAR[2] * s)), int(round(T + REF_BAR[3] * s)) + 1)
+        self.mouse_y = T + REF_MOUSE_Y * s
+        # 게임 중에 찍을 범위 (천 + 점수 막대)
+        self.crop = (max(0, int(L) - 4), max(0, int(T) - 4),
+                     int(np.ceil(R)) + 4, int(np.ceil(self.bar[3])) + 4)
+
+    def moved(self, dx, dy):
+        """좌표 기준을 옮긴 Geo (잘라 찍은 그림용)."""
+        L, T, R, B = self.box
+        g = Geo((L - dx, T - dy, R - dx, B - dy), self.line - dy)
+        g.hit, g.line_found = self.hit, self.line_found
+        return g
+
+    def lane_x(self, k):
+        return self.L + ((REF_YCOL0 + REF_BCOL0) / 2 + REF_STEP * k) * self.s
+
+    def occupancy(self, img):
+        """10개 띠 자리 x 18줄 — 각 칸 가운데에 띠 색이 있으면 True."""
+        occ = np.zeros((NCOL, SEE_ROWS), bool)
+        for i, (x0, x1) in enumerate(self.cx):
+            sub = img[self.ya:self.yb, x0:x1]
+            b, g, r = sub[..., 0], sub[..., 1], sub[..., 2]
+            if i % 2 == 0:
+                m = (r > 140) & (g > b + 60) & (r >= g - 10) & (b < 130)
+            else:
+                m = (b > r + 60) & (b > g + 20) & (b > 90)
+            cs = np.concatenate(([0], np.cumsum(m.sum(axis=1))))
+            occ[i] = (cs[self.r1] - cs[self.r0]) >= self.need[i]
+        return occ
+
+    def fabric_ok(self, img):
+        """찍은 그림이 아직 천인지 (창이 사라지면 다른 화면이 찍힘)."""
+        reg = img[int(self.T) + 2:int(self.line) - 6:6, int(self.L) + 2:int(self.R) - 2:6]
+        b, g, r = reg[..., 0], reg[..., 1], reg[..., 2]
+        mx = np.maximum(np.maximum(b, g), r)
+        mn = np.minimum(np.minimum(b, g), r)
+        return ((mx - mn < 26) & (mn > 100) & (mx < 215)).mean() > 0.55
+
+    def needle_lane(self, img):
+        """바늘이 있는 칸 (0~4). 못 찾으면 None."""
+        band = img[self.ny[0]:self.ny[1], int(self.L):int(self.R)]
+        ys, xs = np.nonzero(band.min(axis=2) > 215)
+        if len(xs) < max(6, 12 * self.s * self.s):
+            return None
+        v = (xs.mean() + int(self.L) - self.L - REF_NEEDLE_X * self.s) / (REF_STEP * self.s)
+        k = int(round(v))
+        if abs(v - k) > 0.3 or not 0 <= k <= 4:
+            return None
+        return k
+
+    def read_score(self, img):
+        """점수 막대 → 점수(0~250). 막대가 안 보이면 None."""
+        x0, x1, y0, y1 = self.bar
+        xa, xb = int(x0) - 2, int(np.ceil(x1)) + 2
+        band = img[y0:y1, xa:xb]
+        if band.shape[0] == 0 or band.shape[1] < 10:
+            return None
+        b, g, r = band[..., 0], band[..., 1], band[..., 2]
+        cf = ((r > 90) & (r > g - 15) & (b < r - 40)).mean(axis=0)
+        ce = ((g > r + 25) & (g > 70)).mean(axis=0)
+        if ((cf > 0.5) | (ce > 0.5)).mean() < 0.7:
+            return None
+        xs = np.nonzero(cf > 0.5)[0]
+        if len(xs) == 0:
+            return 0.0
+        end = xa + xs.max() + 1
+        return max(0.0, min(250.0, (end - x0) / (x1 - x0) * 250.0))
+
+
+def detect_geo(img):
+    box = find_fabric(img)
+    if box is None:
+        return None
+    L, T, R, B = box
+    s = (R - L) / REF_W
+    line = find_line(img, L, R, T + 150 * s, T + 190 * s)
+    return Geo(box, line)
+
+
+def geo_from_layout(w):
+    """화면에서 천을 못 찾으면 measure_sew.py 로 잰 모서리를 씀."""
+    pts = am._layout["points"]
+    if "fab_tl" not in pts or "fab_br" not in pts:
+        return None
+    a = am.layout_point("fab_tl", w)
+    b = am.layout_point("fab_br", w)
+    box = (a[0] - w.left, a[1] - w.top, b[0] - w.left, b[1] - w.top)
+    if box[2] - box[0] < 50:
+        return None
+    line = None
+    if "line" in pts:
+        line = am.layout_point("line", w)[1] - w.top
+    return Geo(box, line)
+
+
+def save_debug(img, geo, path):
+    """인식 결과를 그림으로 저장 (천 상자, 띠 자리, 박음질 줄, 바늘/점수 읽는 곳)."""
+    try:
+        from PIL import Image, ImageDraw
+        rgb = img[:, :, ::-1].clip(0, 255).astype(np.uint8)
+        im = Image.fromarray(rgb)
+        d = ImageDraw.Draw(im)
+        L, T, R, B = geo.box
+        d.rectangle([L, T, R - 1, B - 1], outline=(0, 255, 0))
+        for i, (x0, x1) in enumerate(geo.cx):
+            col = (255, 220, 0) if i % 2 == 0 else (0, 140, 255)
+            d.rectangle([x0, geo.ya, x1 - 1, geo.yb], outline=col)
+        y = geo.clip + geo.hit * geo.rh
+        d.rectangle([L, y, R - 1, y + geo.rh], outline=(255, 0, 255))
+        d.rectangle([L, geo.ny[0], R - 1, geo.ny[1]], outline=(255, 255, 255))
+        x0, x1, y0, y1 = geo.bar
+        d.rectangle([x0, y0, x1, y1], outline=(255, 0, 0))
+        im.save(path)
+    except Exception as e:
+        print(f"  (sew_debug.png 저장 실패: {e})")
+
+
+# ==================== 띠 기억 + 틱 시각 맞추기 ====================
+
+class Tracker:
+    """줄 단위로 띠를 기억하고, 띠가 내려가는 순간(틱)의 시각을 화면 변화로 맞춤.
+
+    cells[i, a] : 띠 자리 i 의 '절대 칸' a 에 띠가 있는지 (1/0, 모름 -1).
+                  틱 번호가 k 일 때 절대 칸 a 는 화면의 a+k 번 줄에 있음.
+    """
+
+    def __init__(self, hit):
+        self.hit = hit
+        self.cells = np.full((NCOL, 2 * OFF), -1, np.int8)
+        self.hist = deque(maxlen=4)
+        self.events = []           # (틱 번호, 그 전 화면 시각, 그 후 화면 시각)
+        self.phi = None            # 0번 틱 시각
+        self.P = 0.5
+        self.k0 = 0                # phi 를 모를 때 쓰는 틱 번호
+        self.outliers = 0
+        self.integrated = 0
+        self.k_last = None
+        self.still = np.zeros((NCOL, SEE_ROWS), np.int16)       # 같은 자리에 계속 있는 횟수(틱)
+        self.still_prev = self.still
+
+    def count(self, t):
+        """시각 t 의 틱 번호와, 그 틱 구간 안에서의 위치(0~1)."""
+        if self.phi is None:
+            return self.k0, None
+        x = (t - self.phi) / self.P
+        k = int(np.floor(x))
+        return k, x - k
+
+    def ready(self):
+        return self.phi is not None and len(self.events) >= 3
+
+    def feed(self, t, occ):
+        h = self.hist
+        h.append((t, occ))
+        if len(h) == 4:
+            (_, o0), (t1, o1), (t2, o2), (_, o3) = h
+            if np.array_equal(o0, o1) and np.array_equal(o2, o3) and not np.array_equal(o1, o2):
+                self._event(t1, t2)
+        if len(h) >= 3:
+            (_, oa), (tb, ob), (_, oc) = list(h)[-3:]
+            if np.array_equal(oa, ob) and np.array_equal(ob, oc):
+                k, frac = self.count(tb)
+                if frac is None or 0.1 <= frac <= 0.9:
+                    self._integrate(k, ob)
+
+    def _event(self, lo, hi):
+        mid = (lo + hi) / 2
+        if self.phi is None:
+            self.k0 += 1
+            k = self.k0
+        else:
+            x = (mid - self.phi) / self.P
+            k = int(round(x))
+            if abs(x - k) > 0.3:
+                self.outliers += 1
+                if self.outliers >= 4:               # 시각이 계속 안 맞음 → 처음부터 다시 맞춤
+                    self.events = [e for e in self.events[-1:]]
+                    self.phi = mid - k * self.P
+                    self.outliers = 0
+                return
+        self.outliers = 0
+        self.events.append((k, lo, hi))
+        self.events = self.events[-60:]
+        self._fit()
+
+    def _fit(self):
+        ev = [e for e in self.events if e[2] - e[1] < 0.2] or self.events[-1:]
+        ks = np.array([e[0] for e in ev], float)
+        mids = np.array([(e[1] + e[2]) / 2 for e in ev])
+        wts = 1.0 / np.maximum(np.array([e[2] - e[1] for e in ev]), 0.01) ** 2
+        P = 0.5
+        if len(ev) >= 8 and ks.max() - ks.min() >= 8:
+            km = (wts * ks).sum() / wts.sum()
+            mm = (wts * mids).sum() / wts.sum()
+            P = float((wts * (ks - km) * (mids - mm)).sum() / (wts * (ks - km) ** 2).sum())
+            P = min(0.51, max(0.49, P))
+        phi = float((wts * (mids - P * ks)).sum() / wts.sum())
+        lo = max(e[1] - P * e[0] for e in ev[-12:])
+        hi = min(e[2] - P * e[0] for e in ev[-12:])
+        if lo <= hi:
+            phi = (lo + hi) / 2
+        self.phi, self.P = phi, P
+
+    def _integrate(self, k, occ):
+        a0 = OFF - k
+        if a0 < 0 or a0 + SEE_ROWS > self.cells.shape[1]:
+            return
+        # 띠는 틱마다 한 줄씩 내려가므로, 화면 같은 자리에 9틱 넘게 계속 보이는 색은 띠가 아님
+        if k != self.k_last:
+            consecutive = self.k_last is not None and k == self.k_last + 1
+            self.still_prev = self.still if consecutive else np.zeros_like(self.still)
+            self.k_last = k
+        self.still = np.where(occ, self.still_prev + 1, 0)
+        self.cells[:, a0:a0 + SEE_ROWS] = occ & (self.still < 9)
+        self.integrated += 1
+
+    def present(self, i, k, hit=None):
+        a = (self.hit if hit is None else hit) - k + OFF
+        if not 0 <= a < self.cells.shape[1]:
+            return False
+        return self.cells[i, a] == 1
+
+    def gains(self, k, horizon):
+        """칸별·구간별 박을 수 있는 띠 수 (5 x horizon)."""
+        a = self.hit - k + OFF
+        idx = np.clip(a - np.arange(horizon), 0, self.cells.shape[1] - 1)
+        g = (self.cells[:, idx] == 1).astype(np.int16)
+        return g[0::2] + g[1::2]
+
+
+def plan_lanes(gain, cur, rem):
+    """앞으로 박을 수 있는 띠가 가장 많아지는 칸 순서 → [지금 구간 칸, 다음 구간 칸, ...].
+
+    rem: 지금 구간에서 남은 비율(0~1). 칸을 옮기면 그 구간 앞부분을 조금 잃는 것으로 계산.
+    """
+    H = gain.shape[1]
+    V = np.array([gain[k, 0] * (rem if k == cur else max(0.0, rem - 0.35)) - 0.004 * abs(k - cur)
+                  for k in range(5)], float)
+    back = []
+    for j in range(1, H):
+        nv = np.empty(5)
+        bp = np.empty(5, int)
+        for k in range(5):
+            best, arg = -1e9, k
+            for p in range(5):
+                cost = 0.0 if p == k else (0.01 + 0.02 * abs(p - k)
+                                           + (0.3 * gain[k, j] if gain[p, j - 1] else 0.0))
+                v = V[p] - cost
+                if v > best:
+                    best, arg = v, p
+            nv[k] = best + gain[k, j]
+            bp[k] = arg
+        V = nv
+        back.append(bp)
+    k = int(np.argmax(V))
+    path = [k]
+    for bp in reversed(back):
+        k = int(bp[k])
+        path.append(k)
+    path.reverse()
+    return path
+
+
+# ==================== 한 판 진행 ====================
+
+def focus_game(w):
+    """키보드 입력이 의장이 창으로 가게 함 (다른 창이 선택돼 있으면 제목줄을 한 번 누름)."""
+    try:
+        act = am._gw.getActiveWindow()
+        if act is None or am._norm(act.title) == am._norm(am._layout["titles"]["card"]):
+            return
+    except Exception:
+        return
+    x = w.left + int(w.width * random.uniform(0.25, 0.6))
+    y = w.top + max(6, int(w.height * 0.025))
+    print("  의장이 창이 선택돼 있지 않아서 제목줄을 한 번 클릭")
+    am.smooth_move_to(x, y, random.uniform(0.2, 0.32), bow=6)
+    time.sleep(random.uniform(0.05, 0.1))
+    pyautogui.mouseDown()
+    time.sleep(random.uniform(0.05, 0.1))
+    pyautogui.mouseUp()
+    time.sleep(random.uniform(0.1, 0.2))
+
+
+_debug_saved = False
+
+
+def wait_until(t):
+    """t 시각까지 기다림 (마지막 2ms 는 바쁘게 기다려서 정확히 맞춤)."""
+    while True:
+        d = t - time.time()
+        if d <= 0:
+            return
+        if d > 0.003:
+            time.sleep(d - 0.002)
+
+
+class Sewing:
+    """의장이 창 한 판 동안의 상태 (화면 읽기 / 칸 정하기 / 키)."""
+
+    def __init__(self, sct, w):
+        self.sct, self.w = sct, w
+        self.res = {"score": 0.0, "secs": 0.0, "pen": 0, "presses": 0, "ok": False}
+        self.keys = Keys()
+        self.mover = Mover()
+        self.pa, self.rb = PRESS_AFTER, RELEASE_BEFORE
+        self.jit_pa = self.jit_rb = 0.0
+        self.hold_off = 0.0
+        self.scores = deque()
+        self.sc = None
+        self.tf = 0.0
+        self.lane = None
+        self.target = 2
+        self.last_k = None
+        self.hyp = {-1: 0, 0: 0, 1: 0}      # 박음질 줄 보정용: 점수 변화와 맞은 횟수
+        self.iv = None                      # 지금 구간에서 한 키만 누른 동안의 점수 기록
+        self.stuck = 0
+        self.ends = []                      # 띠 끝에서 뗀 뒤 점수 변화
+        self.pending_end = None
+        self.last_dbg = 0.0
+
+    # ---------- 준비 ----------
+    def setup(self):
+        global _debug_saved
+        w = self.w
+        t0 = time.time()
+        geo = img = None
+        while time.time() - t0 < 5 and running and alive:
+            if not window_shown(w):
+                return False
+            img = shot(self.sct, w.left, w.top, w.width, w.height)
+            geo = detect_geo(img)
+            if geo is not None:
+                break
+            time.sleep(0.15)
+        if geo is None:
+            if not (running and alive):
+                return False
+            geo = geo_from_layout(w)
+            if geo is None:
+                print("  [실패] 의장이 창에서 회색 천을 못 찾음 — sew_debug.png 를 보내주세요")
+                if img is not None:
+                    save_debug(img, Geo((0, 0, REF_W, 251)), os.path.join(HERE, "sew_debug.png"))
+                return False
+            print("  (천을 화면에서 못 찾아서 measure_sew.py 로 잰 모서리를 씀)")
+        print(f"  천 {geo.R - geo.L:.0f}x{geo.B - geo.T:.0f} (배율 {geo.s:.2f}) · 박음질 줄 {geo.hit}"
+              + ("" if geo.line_found else " (빨간 실선 못 찾음 — 기본값)"))
+        if SAVE_DEBUG_SHOT and not _debug_saved and img is not None:
+            save_debug(img, geo, os.path.join(HERE, "sew_debug.png"))
+            _debug_saved = True
+        cx0, cy0, cx1, cy1 = geo.crop
+        self.g = geo.moved(cx0, cy0)
+        self.ox, self.oy = cx0, cy0                 # 창 왼쪽 위 → 잘라 찍는 곳
+        self.cw, self.ch = cx1 - cx0, cy1 - cy0
+        self.trk = Tracker(self.g.hit)
+        self.lane = self.g.needle_lane(self.grab())
+        self.target = self.lane if self.lane is not None else 2
+        focus_game(w)
+        x, y = self.mouse_xy(self.target)
+        am.smooth_move_to(x, y, random.uniform(0.25, 0.4), bow=8)
+        return True
+
+    def grab(self):
+        return shot(self.sct, self.w.left + self.ox, self.w.top + self.oy, self.cw, self.ch)
+
+    def mouse_xy(self, k):
+        g = self.g
+        return (self.w.left + self.ox + g.lane_x(k) + random.uniform(-0.12, 0.12) * REF_STEP * g.s,
+                self.w.top + self.oy + g.mouse_y + random.uniform(-4, 4) * g.s)
+
+    # ---------- 화면 한 장 ----------
+    def frame(self):
+        """화면을 읽어 띠/바늘/점수를 갱신. 천이 안 보이면 False."""
+        ta = time.time()
+        img = self.grab()
+        tf = (ta + time.time()) / 2
+        if not self.g.fabric_ok(img):
+            return False
+        self.trk.feed(tf, self.g.occupancy(img))
+        nl = self.g.needle_lane(img)
+        if nl is not None:
+            self.lane = nl
+        self.sc = self.g.read_score(img)
+        self.tf = tf
+        if self.sc is not None:
+            self.scores.append((tf, self.sc))
+            while self.scores and tf - self.scores[0][0] > 0.6:
+                self.scores.popleft()
+            self.res["score"] = max(self.res["score"], self.sc)
+        return True
+
+    def times(self, now):
+        k, _ = self.trk.count(now)
+        T_cur = self.trk.phi + k * self.trk.P
+        return k, T_cur, T_cur + self.trk.P
+
+    # ---------- 구간이 바뀔 때 ----------
+    def new_interval(self, k):
+        iv, trk = self.iv, self.trk
+        if iv is not None and iv["n"] >= 3 and iv["t1"] - iv["t0"] >= 0.12:
+            d = iv["s1"] - iv["s0"]
+            obs = True if d > 0.6 else (False if d < -1.5 else None)
+            if obs is not None:
+                for h in self.hyp:
+                    self.hyp[h] += (trk.present(iv["i"], iv["k"], trk.hit + h) == obs)
+                best = max(self.hyp, key=lambda h: self.hyp[h])
+                if best != 0 and self.hyp[best] - self.hyp[0] >= 3:
+                    trk.hit += best
+                    print(f"  [보정] 점수 변화로 보니 박음질 줄이 {best:+d} → {trk.hit}번 줄로 맞춤")
+                    self.hyp = {-1: 0, 0: 0, 1: 0}
+            if d == 0 and iv["t1"] - iv["t0"] >= 0.25:
+                self.stuck += 1
+                if self.stuck == 4:
+                    print("  [주의] 키를 눌러도 점수가 안 움직임 — 의장이 창이 선택돼 있는지 확인")
+                    self.keys.release_all()
+                    focus_game(self.w)
+            elif d != 0:
+                self.stuck = 0
+        self.iv = None
+        self.last_k = k
+        self.jit_pa = random.uniform(-TIMING_JITTER, TIMING_JITTER)
+        self.jit_rb = random.uniform(-TIMING_JITTER, TIMING_JITTER)
+
+    def check_end(self, now):
+        """띠 끝에서 뗀 뒤 점수가 조금씩 깎이면(늦게 뗌) 더 일찍 떼도록 맞춤."""
+        pe = self.pending_end
+        if pe is None or now < pe[0] + 0.3:
+            return
+        self.pending_end = None
+        if self.sc is None or pe[1] is None or self.keys.held():
+            return
+        self.ends = (self.ends + [self.sc - pe[1]])[-5:]
+        if len(self.ends) >= 4 and np.mean(self.ends) < -0.6:
+            self.rb = min(0.16, self.rb + 0.02)
+            self.ends = []
+            print(f"  [보정] 뗄 때 점수가 조금씩 깎임 → 띠 끝 {self.rb:.2f}초 전에 떼기")
+
+    # ---------- 칸 정하기 ----------
+    def plan(self, k, T_next, now):
+        cur = self.lane if self.lane is not None else self.target
+        gain = self.trk.gains(k, 22)
+        path = plan_lanes(gain, cur, max(0.0, (T_next - now) / self.trk.P))
+        k0, k1 = path[0], path[1]
+        if k0 != cur:
+            tgt = k0
+        elif k1 != cur and (gain[cur, 0] == 0 or now >= T_next - self.rb - 0.01):
+            tgt = k1
+        else:
+            tgt = cur
+        if tgt != self.target or (self.lane is not None and self.lane != self.target
+                                  and not self.mover.busy()):
+            self.keys.release_all()
+            self.pending_end = None
+            x, y = self.mouse_xy(tgt)
+            lanes = abs(tgt - cur) if self.lane is not None else 2
+            self.mover.go(x, y, now, max(1, lanes))
+            self.target = tgt
+        self.mover.step(now)
+        return gain
+
+    # ---------- 키 ----------
+    def key_states(self, now):
+        """지금 각 키를 누르고 있어야 하는지 + 다음에 키를 바꿀 시각."""
+        trk = self.trk
+        k, T_cur, T_next = self.times(now)
+        lane = self.lane
+        ok = (lane is not None and lane == self.target and not self.mover.busy()
+              and now >= self.hold_off)
+        wants, nxt = {}, []
+        for c, key in ((0, LEFT_KEY), (1, RIGHT_KEY)):
+            want = False
+            if ok:
+                i = 2 * lane + c
+                p0, p1, pm = trk.present(i, k), trk.present(i, k + 1), trk.present(i, k - 1)
+                t_on = T_cur + self.pa + self.jit_pa
+                t_off = T_next - self.rb - self.jit_rb
+                if p0:
+                    want = (p1 or now < t_off) and (pm or now >= t_on)
+                    if want and not p1:
+                        nxt.append(t_off)
+                    if not want and not pm and now < t_on:
+                        nxt.append(t_on)
+                elif p1:
+                    nxt.append(T_next + self.pa + self.jit_pa)
+            wants[key] = want
+        nxt = [t for t in nxt if t > now]
+        return wants, (min(nxt) if nxt else None), T_next
+
+    def apply_keys(self, now):
+        wants, nxt, T_next = self.key_states(now)
+        for key, want in wants.items():
+            was = self.keys.down[key] is not None
+            self.keys.set(key, want, now)
+            if was and not want:
+                self.pending_end = (T_next if now > T_next - 0.25 else now, self.sc)
+        self.keys.tick(now)
+        return nxt
+
+    def check_penalty(self, now, T_next):
+        """누르고 있는데 점수가 깎이면(빨간 실) 바로 뗌."""
+        if not self.keys.held() or self.sc is None or len(self.scores) < 2:
+            return
+        recent = max(s for (t, s) in self.scores if self.tf - t <= 0.3)
+        if recent - self.sc < 2.5:
+            return
+        since = now - min(t for t in self.keys.down.values() if t is not None)
+        self.keys.release_all()
+        self.pending_end = None
+        self.hold_off = T_next + 0.01
+        self.res["pen"] += 1
+        if since < 0.2:
+            self.pa = min(0.15, self.pa + 0.02)
+            why = "누르자마자"
+        elif T_next - now < 0.2:
+            self.rb = min(0.16, self.rb + 0.02)
+            why = "떼기 직전에"
+        else:
+            why = "누르는 중간에"
+        print(f"  [빨간 실] {why} 점수가 깎임 → 바로 뗌 (누름 지연 {self.pa:.2f}초 · 뗌 여유 {self.rb:.2f}초)")
+        self.scores.clear()
+        self.scores.append((self.tf, self.sc))
+
+    def record_single(self, k, T_cur, T_next):
+        """한 키만 누르고 있는 동안의 점수 변화 기록 (박음질 줄 확인용)."""
+        held = self.keys.held()
+        if len(held) == 2:
+            self.iv = None
+            return
+        if len(held) != 1 or self.sc is None or self.lane is None:
+            return
+        if not (T_cur + 0.1 <= self.tf <= T_next - 0.08):
+            return
+        i = 2 * self.lane + (0 if held[0] == LEFT_KEY else 1)
+        iv = self.iv
+        if iv is None or iv["i"] != i or iv["k"] != k:
+            self.iv = {"i": i, "k": k, "t0": self.tf, "s0": self.sc, "t1": self.tf, "s1": self.sc, "n": 1}
+        else:
+            iv.update(t1=self.tf, s1=self.sc, n=iv["n"] + 1)
+
+    # ---------- 한 판 ----------
+    def run(self):
+        t_start = time.time()
+        if not self.setup():
+            return self.res
+        w = self.w
+        lost = 0
+        try:
+            while running and alive:
+                if not window_shown(w):
+                    break
+                if time.time() - t_start > GAME_TIMEOUT:
+                    print("  [주의] 한 판이 너무 오래 걸림 → 그만둠")
+                    break
+                if not self.frame():
+                    self.keys.release_all()
+                    lost += 1
+                    if lost >= 8:
+                        break
+                    time.sleep(0.03)
+                    continue
+                lost = 0
+                now = time.time()
+                if not self.trk.ready():
+                    self.mover.step(now)
+                    time.sleep(LOOP_DT)
+                    continue
+                k, T_cur, T_next = self.times(now)
+                if k != self.last_k:
+                    self.new_interval(k)
+                self.check_end(now)
+                gain = self.plan(k, T_next, now)
+                nxt = self.apply_keys(now)
+                self.record_single(k, T_cur, T_next)
+                self.check_penalty(now, T_next)
+                if DEBUG and now - self.last_dbg > 0.5:
+                    self.last_dbg = now
+                    print(f"    틱{k} 칸{self.lane}->{self.target} 점수 {self.sc} 누름 {self.keys.held()} "
+                          f"앞으로 {[int(x) for x in gain.sum(axis=0)[:8]]}")
+                # 키를 바꿀 시각이 곧이면 그때까지 기다렸다가 정확히 누르고/뗌
+                if nxt is not None and nxt - time.time() < 0.03:
+                    wait_until(nxt + 0.0005)
+                    if window_shown(w):
+                        self.mover.step(time.time())
+                        self.apply_keys(time.time())
+                else:
+                    time.sleep(LOOP_DT)
+        finally:
+            self.keys.release_all()
+        self.res.update(secs=time.time() - t_start, presses=self.keys.presses,
+                        ok=self.res["score"] >= 235)
+        return self.res
+
+
+def play_game(sct, w):
+    """의장이 창이 떠 있는 동안 박음질. 끝나면 결과 dict."""
+    return Sewing(sct, w).run()
+
+
+# ==================== 제작 창 → 시작 ====================
+
+def start_game(sct):
+    """시작 버튼을 누르고 의장이 창이 뜨면 그 창을 반환."""
+    stale = {getattr(x, "_hWnd", None) for x in am.find_windows("card")}
+    am.human_click(am.START_BTN)
+    print("  시작 버튼 클릭!")
+    t0 = time.time()
+    while time.time() - t0 < 6:
+        w = find_game_win(ignore=stale)
+        if w is not None:
+            time.sleep(random.uniform(0.2, 0.4))
+            return w
+        time.sleep(0.1)
+    print("  [실패] 시작 후 6초 동안 '의장이' 창이 안 뜸")
+    return None
+
+
+def run_round(sct, tpl):
+    """한 판: (이미 떠 있는 의장이 창이 있으면 그것부터) 재료 넣기 → 시작 → 박음질."""
+    w = find_game_win()
+    if w is None:
+        if not am.open_furniture_window(sct):
+            return None
+        if not am.fill_slots(sct, tpl):
+            return None
+        w = start_game(sct)
+        if w is None:
+            return None
+    else:
+        print("  의장이 창이 이미 떠 있음 → 바로 박음질")
+    res = play_game(sct, w)
+    t0 = time.time()
+    while find_game_win() is not None and time.time() - t0 < 3:
+        time.sleep(0.2)
+    return res
+
+
+# ==================== 쉬기 ====================
+
+_rest = {}
+
+
+def _skewed(lo, hi):
+    return random.triangular(lo, hi, lo + (hi - lo) * 0.3)
+
+
+def _fmt(sec):
+    m, s = divmod(int(sec), 60)
+    return f"{m}분 {s}초" if m else f"{s}초"
+
+
+def find_red_close(sct, w):
+    bw, bh = min(160, w.width), min(max(28, int(w.height * 0.09)), w.height)
+    img = shot(sct, w.left + w.width - bw, w.top, bw, bh)
+    b, g, r = img[..., 0], img[..., 1], img[..., 2]
+    ys, xs = np.nonzero((r > 190) & (g < 120) & (b < 120))
+    if len(xs) < 20:
+        return None
+    return int(w.left + w.width - bw + xs.mean()), int(w.top + ys.mean())
+
+
+def close_craft(sct):
+    w = am.find_win("craft")
+    if w is None:
+        return
+    pt = find_red_close(sct, w)
+    if pt is not None:
+        am.human_click(pt, jx=1, jy=1)
+        time.sleep(random.uniform(0.6, 1.0))
+
+
+def rest_for(sec, why, sct=None, away=False):
+    if away and sct is not None:
+        close_craft(sct)
+        am._scan_cache = None
+    end = time.time() + sec
+    when = f" ({time.strftime('%H:%M', time.localtime(end))}에 다시 시작)" if sec >= 60 else ""
+    print(f"[휴식] {why} — {_fmt(sec)}{when}")
+    while running and alive and time.time() < end:
+        time.sleep(0.3)
+
+
+def maybe_rest(sct):
+    if not REST:
+        time.sleep(random.uniform(1.0, 2.0))
+        return
+    now = time.time()
+    if "start" not in _rest:
+        _rest.update(start=now, len=random.uniform(*SESSION_MINS) * 60, games=0,
+                     short_at=random.randint(*SHORT_EVERY),
+                     big_at=now + random.uniform(*BIG_EVERY_HOURS) * 3600)
+    _rest["games"] += 1
+    if now >= _rest["start"] + _rest["len"]:
+        if now >= _rest["big_at"]:
+            rest_for(_skewed(*BIG_MINS) * 60, "크게 쉬기", sct, away=True)
+            _rest["big_at"] = time.time() + random.uniform(*BIG_EVERY_HOURS) * 3600
+        else:
+            rest_for(_skewed(*BREAK_MINS) * 60, "한참 했으니 자리 비움", sct, away=True)
+        _rest.update(start=time.time(), len=random.uniform(*SESSION_MINS) * 60, games=0,
+                     short_at=random.randint(*SHORT_EVERY))
+        return
+    if _rest["games"] >= _rest["short_at"]:
+        rest_for(_skewed(*SHORT_SECS), f"잠깐 쉬기 ({_rest['games']}판 했음)")
+        _rest["games"] = 0
+        _rest["short_at"] = random.randint(*SHORT_EVERY)
+        return
+    time.sleep(_skewed(*BREATH_SECS))
+
+
+# ==================== 실행 ====================
+
+def check_layout():
+    lay = am.load_layout()
+    if lay is None:
+        print("[중단] match_layout.json 이 없어요 — 먼저  py measure_sew.py")
+        return False
+    need = ("job_act", "slot1", "slot2", "cell_first", "cell_row1_last", "cell_row5_first", "start")
+    miss = [n for n in need if n not in lay.get("points", {})]
+    if miss:
+        print(f"[중단] 측정값에 없는 것: {', '.join(miss)} — py measure_sew.py 로 다시 재기")
+        return False
+    if am._norm(lay.get("titles", {}).get("card", "")) != am._norm("의장이"):
+        print("[중단] match_layout.json 이 의장이용이 아니에요 (주장이 것을 복사했나요?)"
+              " — 이 폴더에서  py measure_sew.py")
+        return False
+    if am._gw is None:
+        print("[중단] pygetwindow 가 없어요 — cmd 에서:  py -m pip install pygetwindow")
+        return False
+    return True
+
+
+def worker():
+    global running, alive
+    try:
+        if not check_layout():
+            alive = False
+            return
+        am.RECIPE = list(RECIPE)
+        am.NUM_SLOTS = NUM_SLOTS
+        tpl = am.load_templates()
+        names = {n for n, _ in RECIPE}
+        tpl = {k: v for k, v in tpl.items() if k in names}
+        missing = [n for n in names if n not in tpl]
+        if missing:
+            print(f"[중단] items 폴더에 그림이 없는 재료: {', '.join(missing)}")
+            print("       제작 창을 띄우고  py auto_match.py 캡처  → 이름 바꾸기 → auto_sew.py 의 RECIPE 확인")
+            alive = False
+            return
+        print("재료:", ", ".join(f"{n} x{c}" for n, c in RECIPE))
+        print("준비 완료 — F8 로 시작")
+        games = wins = fails = 0
+        with mss.mss() as sct:
+            while alive:
+                if not running:
+                    time.sleep(0.15)
+                    continue
+                am.running = am.alive = True
+                res = run_round(sct, tpl)
+                if not running:
+                    continue
+                if res is None:
+                    fails += 1
+                    if fails >= FAIL_STOP:
+                        running = False
+                        fails = 0
+                        print(f"⏸ {FAIL_STOP}번 연속 실패해서 멈춤 — 재료 확인 후 F8")
+                        continue
+                    print(f"[오류] 이번 판 실패 — {FAIL_WAIT}초 뒤 다시 (지금 바로: F8 두 번, 종료 F9)")
+                    t0 = time.time()
+                    while running and alive and time.time() - t0 < FAIL_WAIT:
+                        time.sleep(0.2)
+                    continue
+                fails = 0
+                games += 1
+                wins += res["ok"]
+                print(f"★ {games}판 끝 — {'성공' if res['ok'] else '실패?'} "
+                      f"(점수 {res['score']:.0f} · {res['secs']:.0f}초 · 누름 {res['presses']}번"
+                      f" · 빨간 실 {res['pen']}번) 누적 성공 {wins}/{games}")
+                if MAX_GAMES and games >= MAX_GAMES:
+                    running = False
+                    print(f"⏸ {MAX_GAMES}판 다 했음")
+                    continue
+                maybe_rest(sct)
+    except pyautogui.FailSafeException:
+        print("\n[비상정지] 마우스가 화면 구석으로 갔습니다. 완전히 종료합니다.")
+        alive = False
+    except Exception:
+        import traceback
+        print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
+        traceback.print_exc()
+        alive = False
+    finally:
+        for k in (LEFT_KEY, RIGHT_KEY):
+            try:
+                keyboard.release(k)
+            except Exception:
+                pass
+
+
+def toggle():
+    global running
+    running = not running
+    am.running = running
+    am._scan_cache = None
+    if running:
+        _rest.clear()
+    print("\n▶ 시작됨" if running else "\n⏸ 정지됨 (지금 하던 동작이 끝나면 멈춤)")
+
+
+def quit_all():
+    global running, alive
+    running = alive = False
+    am.running = am.alive = False
+    print("\n종료합니다...")
+
+
+def hires_timer():
+    """윈도우의 sleep 정밀도를 1ms 로 (박음질 타이밍이 중요해서)."""
+    try:
+        import ctypes
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:
+        pass
+
+
+def main():
+    hires_timer()
+    print("=" * 56)
+    print(" 의장이(재봉틀) 자동")
+    print(" F8 = 시작/정지    F9 = 종료")
+    print(" 비상시: 마우스를 화면 왼쪽 위 구석으로!")
+    print("=" * 56)
+    keyboard.add_hotkey("f8", toggle)
+    keyboard.add_hotkey("f9", quit_all)
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    while alive:
+        time.sleep(0.2)
+    print("끝.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        import traceback
+        print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
+        traceback.print_exc()
+    input("\n엔터를 누르면 창이 닫힙니다...")
