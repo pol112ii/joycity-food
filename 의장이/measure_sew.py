@@ -13,8 +13,10 @@ auto_sew.py 는 이 파일을 보고 매번 창을 제목으로 찾아서 좌표
   1. 게임에서 직업 창(F2)과 제작 창(직업활동)을 띄워 둠
   2. cmd 에서:  py measure_sew.py
   3. 안내대로 마우스를 올리고 F1.  잘못 찍었으면 F2 로 그 지점 다시
-  4. 천(의장이 창) 차례가 되면 재료를 넣고 시작을 눌러 의장이 창을 띄운 뒤 계속
   ESC = 중간에 그만두기 (저장 안 함)
+
+  ※ 의장이 창(천)은 봇이 화면에서 알아서 찾으므로 보통은 안 잼.
+    봇이 "천을 못 찾음" 이라고 할 때만, 다시 실행해서 3번 묶음(의장이 창)을 고르면 잼
 """
 
 import os
@@ -44,10 +46,14 @@ STEPS = [
     ("cell_row1_last",  "craft", "제작 창 인벤토리 첫 줄 맨 오른쪽 칸 가운데"),
     ("cell_row5_first", "craft", "제작 창 인벤토리 맨 아래 줄(5번째 줄) 첫 칸 가운데"),
     ("start",           "craft", "제작 창 초록 [시작] 버튼 가운데"),
-    ("fab_tl",          "card",  "의장이 창 회색 천의 왼쪽 위 모서리  ※ 시작을 눌러 의장이 창을 띄운 뒤"),
+]
+# 의장이 창(천) — 봇이 화면에서 자동으로 찾으므로 보통은 안 잼 (못 찾을 때만 3번 묶음으로)
+CARD_STEPS = [
+    ("fab_tl",          "card",  "의장이 창 회색 천의 왼쪽 위 모서리  ※ 재료를 넣고 시작을 눌러 의장이 창을 띄운 뒤"),
     ("fab_br",          "card",  "회색 천의 오른쪽 아래 모서리"),
     ("line",            "card",  "빨간 실선(바늘이 있는 가로줄) 위 아무 곳"),
 ]
+ALL_STEPS = STEPS + CARD_STEPS
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "match_layout.json")
 
@@ -91,7 +97,7 @@ def wait_key():
 GROUPS = [
     ("직업 창 [직업활동] 버튼", [0]),
     ("제작 창 (재료 슬롯 / 인벤토리 칸 / 시작 버튼)", [1, 2, 3, 4, 5, 6]),
-    ("의장이 창 (천 / 빨간 실선)", [7, 8, 9]),
+    ("의장이 창 (천 / 빨간 실선) — 보통은 필요 없음. 봇이 천을 못 찾을 때만", [7, 8, 9]),
 ]
 
 
@@ -114,7 +120,7 @@ def choose_steps():
     if not picks:
         return STEPS, None
     print("→ " + ", ".join(GROUPS[g - 1][0] for g in picks) + " 만 다시 잽니다 (나머지는 그대로)")
-    return [STEPS[i] for g in picks for i in GROUPS[g - 1][1]], old
+    return [ALL_STEPS[i] for g in picks for i in GROUPS[g - 1][1]], old
 
 
 def main():
@@ -163,13 +169,17 @@ def main():
         return points[b]["d" + axis] - points[a]["d" + axis]
     print("\n" + "-" * 60)
     print(" 점검 (이 컴퓨터 픽셀 기준)")
-    print(f"   슬롯 간격      : {d('slot1', 'slot2', 'x')}")
-    print(f"   인벤토리 간격  : 가로 {d('cell_first', 'cell_row1_last', 'x') / 5:.1f}"
-          f" / 세로 {d('cell_first', 'cell_row5_first', 'y') / 4:.1f}  (둘이 거의 같아야 정상)")
-    fw, fh = d('fab_tl', 'fab_br', 'x'), d('fab_tl', 'fab_br', 'y')
-    print(f"   천 크기        : {fw} x {fh}  (칸 하나 폭 약 {fw / 5:.0f})")
-    print(f"   빨간 실선 높이 : 천 위에서 {d('fab_tl', 'line', 'y')}  (천 높이의 "
-          f"{d('fab_tl', 'line', 'y') / max(fh, 1) * 100:.0f}% — 보통 60~75%)")
+    try:
+        print(f"   슬롯 간격      : {d('slot1', 'slot2', 'x')}")
+        print(f"   인벤토리 간격  : 가로 {d('cell_first', 'cell_row1_last', 'x') / 5:.1f}"
+              f" / 세로 {d('cell_first', 'cell_row5_first', 'y') / 4:.1f}  (둘이 거의 같아야 정상)")
+    except KeyError:
+        pass
+    if all(n in points for n in ("fab_tl", "fab_br", "line")):
+        fw, fh = d('fab_tl', 'fab_br', 'x'), d('fab_tl', 'fab_br', 'y')
+        print(f"   천 크기        : {fw} x {fh}  (칸 하나 폭 약 {fw / 5:.0f})")
+        print(f"   빨간 실선 높이 : 천 위에서 {d('fab_tl', 'line', 'y')}  (천 높이의 "
+              f"{d('fab_tl', 'line', 'y') / max(fh, 1) * 100:.0f}% — 보통 60~75%)")
 
     data = {"titles": TITLES, "sizes": sizes, "points": points,
             "saved_at": time.strftime("%Y-%m-%d %H:%M")}
