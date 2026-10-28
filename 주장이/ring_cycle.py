@@ -62,17 +62,26 @@ RECOVER_MAX = 3                     # 실패하면 게임 창을 정리하고 �
 REUSE_SURE = 0.80                   # '이미 있는 리어카맨'으로 믿을 기준 (애매하면 새로 소환)
 PICK_TRIES = 6                      # 재료 한 무더기를 줍기 위해 눌러볼 최대 횟수
 
-# ----- 쉬는 시간 (쉬지 않고 계속 만들면 매크로로 보일 수 있어서) -----
-# 세 종류를 섞음. 범위 안에서 매번 랜덤이고, 대부분 짧은 쪽으로 나오다가 가끔 길게 나옴.
-# 카드판/리어카맨 중간에는 안 쉼. 쉬는 중에도 F8 = 바로 멈춤
-REST = True                         # False 로 하면 안 쉼
-PAUSE_CHANCE = 0.10                 # ① 멈칫: 판 사이에 이 확률로
-PAUSE_SECS = (3, 12)                #          이만큼(초) 잠깐 멈춤
-SHORT_EVERY = (1, 5)                # ② 짧은 쉼: 이 판수마다 (매번 랜덤)
-SHORT_SECS = (10, 60)               #          이만큼(초) 쉼
-LONG_EVERY = (25, 35)               # ③ 긴 휴식: 이만큼(분)마다 — 때가 되면 '반지를 판 직후'에 쉼
-LONG_MINS = (5, 12)                 #          이만큼(분) 쉼 (제작 창을 닫고 쉬었다가 다시 엶)
-LONG_WAIT_SELL = 15                 #          때가 됐는데 이만큼(분) 동안 팔 일이 없으면 그냥 판 사이에 쉼
+# ----- 사람처럼 쉬기 (쉬지 않고 계속 만들면 매크로로 보일 수 있어서) -----
+# '한 번 앉아서 하는 시간(세션)' 단위로 움직임. 숫자는 전부 범위 안에서 매번 랜덤.
+# 카드판/리어카맨 중간에는 절대 안 쉼. 쉬는 중에도 F8 = 바로 멈춤
+REST = True                         # False 로 하면 아래 전부 안 함 (쉬지 않고 계속)
+SESSION_MINS = (40, 90)             # 한 번 앉아서 하는 시간
+BREAK_MINS = (10, 25)               # 세션이 끝나면 쉬는 시간 (제작 창 닫고 자리 비움)
+BIG_EVERY_HOURS = (3, 4)            # 이만큼마다 한 번은 크게 쉼 (밥 먹는 것처럼)
+BIG_MINS = (40, 90)                 #   그때 쉬는 시간
+BREATH_SECS = (1, 4)                # 판 사이 숨 고르기 (매 판)
+BREATH_LONG = (5, 15)               #   가끔은 이만큼
+BREATH_LONG_CHANCE = 0.12           #   그 '가끔'의 확률
+DISTRACT_PER_SESSION = (2, 4)       # 세션 중 딴짓(폰 보기 등) 횟수 — 아무 때나
+DISTRACT_SECS = (30, 180)           #   한 번에 이만큼
+FATIGUE = 0.5                       # 세션 끝 무렵엔 숨 고르기/딴짓이 이만큼(50%)까지 늘어남 (지침)
+SPEED_JITTER = 0.10                 # 판마다 카드 누르는 속도를 ±10% 안에서 다르게 (느려지는 쪽은 절반만)
+WAIT_FOR_SELL = 15                  # 쉴 때가 되면 '반지 판 직후'에 쉼 — 이만큼(분) 동안 팔 일이 없으면 그냥 판 사이에
+# 하루 한 번 잠 (24시간 내내 도는 게 제일 눈에 띔). 밤에도 계속 돌리려면 SLEEP = False
+SLEEP = True
+SLEEP_START = (2.0, 4.5)            # 잠드는 시각 (시) — 새벽 2시 ~ 4시 반 사이 랜덤
+SLEEP_HOURS = (4, 6)                # 자는 시간
 
 running = False
 alive = True
@@ -548,19 +557,59 @@ def _skewed(lo, hi):
 
 
 def _fmt(sec):
-    m, s = divmod(int(sec), 60)
-    return f"{m}분 {s}초" if m else f"{s}초"
+    h, rem = divmod(int(sec), 3600)
+    m, s_ = divmod(rem, 60)
+    if h:
+        return f"{h}시간 {m}분"
+    return f"{m}분 {s_}초" if m else f"{s_}초"
 
 
-_rest = {}                      # 쉬는 시간 계산용 (다음 짧은 쉼까지 판수, 다음 긴 휴식 시각 등)
+def _clock(t):
+    return time.strftime("%H:%M", time.localtime(t))
 
 
-def _plan_rest(now=None):
+_rest = {}                      # 세션/휴식 계산용
+_base_speed = None              # 원래 마우스 속도 (판마다 이걸 기준으로 살짝 바꿈)
+
+
+def _next_sleep(now):
+    """다음 잠드는 시각 (지금 이후). 켠 직후에 바로 자지는 않게 최소 1시간 뒤."""
+    lt = time.localtime(now)
+    midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    for day in range(3):
+        t = midnight + day * 86400 + random.uniform(*SLEEP_START) * 3600
+        if t > now + 3600:
+            return t
+    return now + 86400
+
+
+def _new_session(now=None):
     now = now or time.time()
-    _rest["games"] = 0
-    _rest["short_at"] = random.randint(*SHORT_EVERY)
-    _rest.setdefault("since", now)
-    _rest.setdefault("long_at", now + _skewed(*LONG_EVERY) * 60)
+    length = random.uniform(*SESSION_MINS) * 60
+    _rest["start"], _rest["len"] = now, length
+    n = random.randint(*DISTRACT_PER_SESSION)
+    _rest["distract"] = sorted(now + random.uniform(0.1, 0.9) * length for _ in range(n))
+    _rest.setdefault("big_at", now + random.uniform(*BIG_EVERY_HOURS) * 3600)
+    if SLEEP:
+        _rest.setdefault("sleep_at", _next_sleep(now))
+
+
+def _tired():
+    """세션을 얼마나 했는지 0~1 (1 = 세션 끝 무렵)."""
+    if "start" not in _rest:
+        return 0.0
+    return min(1.0, (time.time() - _rest["start"]) / _rest["len"])
+
+
+def game_speed():
+    """이번 판 카드 누르는 속도 — 판마다 조금씩 다르고, 지칠수록 살짝 느려짐."""
+    global _base_speed
+    if _base_speed is None:
+        _base_speed = am.MOUSE_SPEED
+    if not REST:
+        return _base_speed
+    f = random.uniform(-SPEED_JITTER, SPEED_JITTER / 2) + 0.05 * _tired()
+    return _base_speed * (1 + f)
 
 
 def after_rest_check(sct):
@@ -584,26 +633,30 @@ def after_rest_check(sct):
     return True
 
 
-def rest_for(sec, why, sct=None, long=False):
-    """sec 초 동안 쉼. 가끔 마우스만 살짝 움직임 (클릭은 안 함). F8/F9 누르면 바로 끝.
+def rest_for(sec, why, sct=None, long=False, nudge=False):
+    """sec 초 동안 쉼. F8/F9 누르면 바로 끝.
 
-    긴 휴식(long)은 제작 창을 닫고 쉬었다가, 돌아오면 게임이 그대로인지 확인함.
-    확인에 실패하면 멈춤(running = False).
+    long  : 자리 비움 (세션 끝/큰 휴식/잠) — 제작 창을 닫고 쉬었다가, 돌아오면 게임이
+            그대로인지 확인함. 확인에 실패하면 멈춤(running = False). 마우스는 안 건드림.
+    nudge : 딴짓 — 자리에 있는 것처럼 가끔 마우스만 살짝 옮김 (클릭은 안 함)
     """
     global running
     if long and sct is not None and am.craft_open(sct):
         close_craft(sct)
-    print(f"[휴식] {why} — {_fmt(sec)} 쉼  (F8 = 바로 멈춤)")
     end = time.time() + sec
-    nudge = time.time() + random.uniform(15, 60)
+    if sec >= 60:
+        print(f"[휴식] {why} — {_fmt(sec)} 쉼 ({_clock(end)}에 다시 시작)  F8 = 바로 멈춤")
+    else:
+        print(f"[휴식] {why} — {_fmt(sec)}")
+    nxt = time.time() + random.uniform(10, 40)
     while running and alive and time.time() < end:
         time.sleep(min(0.5, max(0.05, end - time.time())))
-        if time.time() >= nudge and time.time() < end - 2:
-            nudge = time.time() + random.uniform(20, 90) * (2 if long else 1)
-            if random.random() < 0.5:        # 사람처럼 가끔 마우스만 조금 옮김 (게임 창 안에서)
+        if nudge and time.time() >= nxt and time.time() < end - 2:
+            nxt = time.time() + random.uniform(15, 60)
+            if random.random() < 0.6:
                 mx, my = pyautogui.position()
                 w = main_win()
-                nx, ny = mx + random.randint(-150, 150), my + random.randint(-100, 100)
+                nx, ny = mx + random.randint(-120, 120), my + random.randint(-80, 80)
                 if w is not None:
                     nx = min(max(nx, w.left + 20), w.left + w.width - 20)
                     ny = min(max(ny, w.top + 40), w.top + w.height - 20)
@@ -614,42 +667,60 @@ def rest_for(sec, why, sct=None, long=False):
         running = False
         am.running = False
         return
-    print("  휴식 끝 → 계속")
+    if sec >= 60:
+        print("  휴식 끝 → 계속")
 
 
-def _long_rest(sct, where):
+def _away(sct, where):
+    """자리 비움 — 잠 / 큰 휴식 / 세션 끝 중 지금 해당하는 것. 끝나면 새 세션."""
     now = time.time()
-    played = (now - _rest["since"]) / 60
-    rest_for(_skewed(*LONG_MINS) * 60, f"긴 휴식 ({where}, 약 {played:.0f}분 돌았음)", sct, long=True)
-    _rest.clear()
-    _plan_rest()
+    played = (now - _rest["start"]) / 60
+    if SLEEP and now >= _rest.get("sleep_at", now + 1):
+        rest_for(random.uniform(*SLEEP_HOURS) * 3600, f"잠 ({where})", sct, long=True)
+        _rest.pop("sleep_at", None)
+        _rest.pop("big_at", None)            # 자고 나면 큰 휴식 시계도 새로
+    elif now >= _rest["big_at"]:
+        rest_for(_skewed(*BIG_MINS) * 60, f"큰 휴식 ({where}, 이번 세션 {played:.0f}분 함)", sct, long=True)
+        _rest.pop("big_at", None)
+    else:
+        rest_for(_skewed(*BREAK_MINS) * 60, f"세션 끝 ({where}, {played:.0f}분 함)", sct, long=True)
+    _new_session()
+
+
+def _away_due(now):
+    return now >= _rest["start"] + _rest["len"] or (SLEEP and now >= _rest.get("sleep_at", now + 1))
 
 
 def maybe_rest(sct=None):
-    """판 하나가 끝날 때마다 불림 — 멈칫 / 짧은 쉼 / (오래 못 팔았으면) 긴 휴식."""
+    """판 하나가 끝날 때마다 불림 — 숨 고르기 / 딴짓 / (오래 못 팔았으면) 자리 비움."""
     if not REST:
         return
     now = time.time()
-    if "short_at" not in _rest:
-        _plan_rest(now)
-    _rest["games"] += 1
-    # 긴 휴식은 보통 반지를 판 직후에 함 (after_sell_rest). 너무 오래 팔 일이 없으면 여기서
-    if now >= _rest["long_at"] + LONG_WAIT_SELL * 60:
-        _long_rest(sct, "판 사이")
+    if "start" not in _rest:
+        _new_session(now)
+    # 자리 비움은 보통 반지를 판 직후에 함 (after_sell_rest). 한참 팔 일이 없으면 여기서
+    if _away_due(now):
+        _rest.setdefault("due_since", now)
+        if now - _rest["due_since"] >= WAIT_FOR_SELL * 60:
+            _rest.pop("due_since", None)
+            _away(sct, "판 사이")
+            return
+    tired = 1 + FATIGUE * _tired()
+    if _rest["distract"] and now >= _rest["distract"][0]:
+        _rest["distract"].pop(0)
+        rest_for(_skewed(*DISTRACT_SECS) * tired, "딴짓", nudge=True)
         return
-    if _rest["games"] >= _rest["short_at"]:
-        rest_for(_skewed(*SHORT_SECS), f"짧은 쉼 ({_rest['games']}판 만들었음)")
-        _rest["games"] = 0
-        _rest["short_at"] = random.randint(*SHORT_EVERY)
-        return
-    if random.random() < PAUSE_CHANCE:
-        rest_for(_skewed(*PAUSE_SECS), "잠깐 멈칫")
+    if random.random() < BREATH_LONG_CHANCE * tired:
+        rest_for(_skewed(*BREATH_LONG) * tired, "잠깐 멈칫")
+    else:
+        time.sleep(_skewed(*BREATH_SECS) * tired)          # 숨 고르기 (말없이)
 
 
 def after_sell_rest(sct):
-    """반지를 판 직후 — 긴 휴식 때가 됐으면 여기서 쉼 (한 묶음 끝내고 쉬는 것처럼)."""
-    if REST and "long_at" in _rest and time.time() >= _rest["long_at"]:
-        _long_rest(sct, "판 직후")
+    """반지를 판 직후 — 자리 비울 때가 됐으면 여기서 쉼 (한 묶음 끝내고 쉬는 것처럼)."""
+    if REST and "start" in _rest and _away_due(time.time()):
+        _rest.pop("due_since", None)
+        _away(sct, "판 직후")
 
 
 def craft_all(sct):
@@ -712,12 +783,12 @@ def craft_all(sct):
             if fails >= 3:
                 return -1
             continue
+        am.MOUSE_SPEED = game_speed()        # 판마다 속도를 조금씩 다르게
         ok, stats = am.play_board(sct)
         if ok:
             done += 1
             fails = 0
             print(f"★ 반지 만들기 {done}번째 완료 (클릭 {stats['clicks']}회, {stats['secs']}초)")
-            time.sleep(random.uniform(1.0, 2.0))
             maybe_rest(sct)
         else:
             fails += 1
