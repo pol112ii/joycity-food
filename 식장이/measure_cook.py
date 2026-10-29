@@ -87,17 +87,48 @@ def wait_key():
             return ev.name
 
 
+# 일부만 다시 잴 때 고르는 묶음 (STEPS 의 번호, 0부터)
+GROUPS = [
+    ("직업 창 [직업활동] 버튼", [0]),
+    ("제작 창 (재료 슬롯 / 인벤토리 칸 / 시작 버튼)", [1, 2, 3, 4, 5, 6]),
+    ("식장이 창 (온도계 / 바탕)", [7, 8, 9]),
+]
+
+
+def choose_steps():
+    """cook_layout.json 이 있으면 전부/일부 중 고르게 함. (단계 목록, 기존 데이터 또는 None)"""
+    if not os.path.exists(OUT):
+        return STEPS, None
+    try:
+        with open(OUT, encoding="utf-8") as f:
+            old = json.load(f)
+        old["points"], old["sizes"]
+    except Exception:
+        return STEPS, None
+    print("\n이미 잰 값(cook_layout.json)이 있어요. 바뀐 부분만 다시 잴 수 있어요.")
+    for n, (label, _) in enumerate(GROUPS, 1):
+        print(f"   {n}. {label}")
+    ans = input("다시 잴 번호 (예: 3  또는  2,3)  /  전부 다시 재려면 그냥 엔터: ").strip()
+    picks = sorted({int(t) for t in ans.replace(" ", ",").split(",") if t.isdigit()
+                    and 1 <= int(t) <= len(GROUPS)})
+    if not picks:
+        return STEPS, None
+    print("→ " + ", ".join(GROUPS[g - 1][0] for g in picks) + " 만 다시 잽니다 (나머지는 그대로)")
+    return [STEPS[i] for g in picks for i in GROUPS[g - 1][1]], old
+
+
 def main():
     print("=" * 60)
     print(" 식장이 창 위치 측정  (F1 = 기록, F2 = 직전 것 다시, ESC = 그만)")
     print(" 창 제목:", ", ".join(f"{k}='{v}'" for k, v in TITLES.items()))
     print("=" * 60)
-    points = {}
-    sizes = {}
+    steps, old = choose_steps()
+    points = old["points"] if old else {}     # 안 다시 재는 값은 그대로 둠
+    sizes = old["sizes"] if old else {}
     i = 0
-    while i < len(STEPS):
-        name, kind, guide = STEPS[i]
-        print(f"\n[{i + 1}/{len(STEPS)}] {guide}")
+    while i < len(steps):
+        name, kind, guide = steps[i]
+        print(f"\n[{i + 1}/{len(steps)}] {guide}")
         print("   → 마우스를 올리고 F1")
         key = wait_key()
         if key == "esc":
@@ -132,11 +163,14 @@ def main():
         return points[b]["d" + axis] - points[a]["d" + axis]
     print("\n" + "-" * 60)
     print(" 점검 (이 컴퓨터 픽셀 기준)")
-    print(f"   슬롯 간격      : {d('slot1', 'slot2', 'x')}")
-    print(f"   인벤토리 간격  : 가로 {d('cell_first', 'cell_row1_last', 'x') / 5:.1f}"
-          f" / 세로 {d('cell_first', 'cell_row5_first', 'y') / 4:.1f}  (둘이 거의 같아야 정상)")
-    print(f"   온도계 길이    : {d('gauge_top', 'gauge_bottom', 'y')}"
-          f"  (좌우 차이 {d('gauge_top', 'gauge_bottom', 'x')} — 0 에 가까워야 정상)")
+    try:
+        print(f"   슬롯 간격      : {d('slot1', 'slot2', 'x')}")
+        print(f"   인벤토리 간격  : 가로 {d('cell_first', 'cell_row1_last', 'x') / 5:.1f}"
+              f" / 세로 {d('cell_first', 'cell_row5_first', 'y') / 4:.1f}  (둘이 거의 같아야 정상)")
+        print(f"   온도계 길이    : {d('gauge_top', 'gauge_bottom', 'y')}"
+              f"  (좌우 차이 {d('gauge_top', 'gauge_bottom', 'x')} — 0 에 가까워야 정상)")
+    except KeyError:
+        pass
 
     data = {"titles": TITLES, "sizes": sizes, "points": points,
             "saved_at": time.strftime("%Y-%m-%d %H:%M")}
