@@ -4,14 +4,14 @@
 
 ■ 게임 (영상으로 확인한 것)
   - 회색 천에 세로 칸이 5개. 칸마다 노란 띠(왼박음) 자리와 파란 띠(오른박음) 자리가 있음
-  - 띠는 위에서 0.5초마다 한 줄씩 내려옴
+  - 띠는 위에서 일정한 간격(0.4~0.5초)마다 한 줄씩 내려옴 — 간격은 봇이 화면으로 잼
   - 바늘 두 개는 마우스 좌우 위치를 따라 칸 단위로 움직임
   - 띠가 빨간 실선(바늘)에 걸쳐 있는 동안 그 색 키를 누르고 있으면 점수가 오름
   - 띠가 없는데 누르고 있으면 빨간 실이 나오고 점수가 깎임
   - 250점이 되면 창이 사라지고 끝 (못 채우면 재료만 없어짐)
 
 ■ 이 봇이 하는 일
-  - 내려오는 띠를 줄 단위로 기억하고, 줄이 내려가는 순간(0.5초마다)을 화면으로 정확히 맞춤
+  - 내려오는 띠를 줄 단위로 기억하고, 줄이 내려가는 순간과 간격을 화면으로 정확히 맞춤
   - 띠가 바늘에 닿는 순간 바로 뒤에 누르고, 띠가 끝나는 순간 바로 앞에 뗌
   - 앞으로 10초 동안 가장 많이 박을 수 있는 칸 순서를 계산해서 마우스를 미리 옮김
   - 점수 막대를 계속 보면서, 점수가 깎이면 바로 떼고 타이밍을 스스로 맞춤
@@ -458,8 +458,15 @@ class Tracker:
     def _event(self, lo, hi):
         mid = (lo + hi) / 2
         if self.phi is None:
+            # 처음 몇 번은 차례대로 세면서, 줄이 내려가는 간격(게임마다 0.4초/0.5초 등)을 먼저 잼
             self.k0 += 1
-            k = self.k0
+            self.events.append((self.k0, lo, hi))
+            mids = [(e[1] + e[2]) / 2 for e in self.events if e[2] - e[1] < 0.3]
+            ds = [b - a for a, b in zip(mids, mids[1:]) if 0.25 <= b - a <= 0.75]
+            if len(ds) >= 3:
+                self.P = float(np.median(ds))
+                self._fit()
+            return
         else:
             x = (mid - self.phi) / self.P
             k = int(round(x))
@@ -480,12 +487,12 @@ class Tracker:
         ks = np.array([e[0] for e in ev], float)
         mids = np.array([(e[1] + e[2]) / 2 for e in ev])
         wts = 1.0 / np.maximum(np.array([e[2] - e[1] for e in ev]), 0.01) ** 2
-        P = 0.5
+        P = self.P
         if len(ev) >= 8 and ks.max() - ks.min() >= 8:
             km = (wts * ks).sum() / wts.sum()
             mm = (wts * mids).sum() / wts.sum()
-            P = float((wts * (ks - km) * (mids - mm)).sum() / (wts * (ks - km) ** 2).sum())
-            P = min(0.51, max(0.49, P))
+            Pf = float((wts * (ks - km) * (mids - mm)).sum() / (wts * (ks - km) ** 2).sum())
+            P = min(self.P * 1.03, max(self.P * 0.97, Pf))
         phi = float((wts * (mids - P * ks)).sum() / wts.sum())
         lo = max(e[1] - P * e[0] for e in ev[-12:])
         hi = min(e[2] - P * e[0] for e in ev[-12:])
@@ -614,8 +621,8 @@ def load_learned():
             d = json.load(f)
         if d.get("lat") is not None:
             _learned["lat"] = [float(d["lat"])] * 3
-        _learned["dA"] = int(d.get("dA", 0))
-        _learned["dD"] = int(d.get("dD", 0))
+        _learned["dA"] = int(d.get("dA2", 0))
+        _learned["dD"] = int(d.get("dD2", 0))
         if d.get("rb"):
             _learned["rb"] = float(d["rb"])
         print(f"지난번에 맞춘 값: 키 반응 {d.get('lat') or 0:.2f}초 · 시작 줄 {_learned['dA']:+d} · 끝 줄 {_learned['dD']:+d}")
@@ -628,7 +635,7 @@ def save_learned():
         import json
         lat = float(np.median(_learned["lat"])) if _learned["lat"] else None
         with open(LEARN_FILE, "w", encoding="utf-8") as f:
-            json.dump({"lat": lat, "dA": _learned["dA"], "dD": _learned["dD"], "rb": _learned["rb"]}, f)
+            json.dump({"lat": lat, "dA2": _learned["dA"], "dD2": _learned["dD"], "rb": _learned["rb"]}, f)
     except Exception:
         pass
 
