@@ -6,7 +6,8 @@
   - 찾으면: 봇 정지 · 키 떼기 → 텔레그램에 확인 창 사진 + 1초마다 알림 메시지
   - 텔레그램에 숫자 4자리를 답장하면 봇이 입력칸에 치고 [확인]을 누름
     (숫자를 읽는 건 사람 — 봇은 받은 숫자를 대신 쳐주기만 함. 다른 답장은 알림만 멈춤)
-    컴퓨터가 여러 대면 '3042 규남' 처럼 이름 일부를 붙이면 그 컴퓨터만 입력
+    여러 대가 동시에 뜨면: 그 컴퓨터 알림(사진/메시지)에 '답장'으로 숫자를 보내면 그 컴퓨터만 입력
+    (또는 '3042 규남' 처럼 이름 일부를 붙이기)
   - 확인 창이 사라지면(입력 완료) 잠깐 쉬었다가 하던 걸 이어서 함
   - 40초가 지나도 안 사라지면 정지한 채로 둠 (접속이 끊겼을 수 있음)
 
@@ -174,25 +175,66 @@ def _latest_update(bot):
         return None
 
 
-def _send(bot, text):
+def _new_updates(bot, after):
+    """after 보다 새 텔레그램 메시지 → (마지막 update_id, [(글자, 답장한 원래 메시지 글자), ...]).
+    최근 10개까지 봄 — 여러 컴퓨터에 연달아 답장해도 안 놓치게."""
+    try:
+        url = f"https://api.telegram.org/bot{bot.TELEGRAM_TOKEN}/getUpdates?offset=-10&timeout=0"
+        resp = bot._tg_urlopen(url, timeout=5)
+        res = json.loads(resp.read().decode()).get("result", [])
+    except Exception:
+        return after, []
+    out = []
+    for u in res:
+        uid = u.get("update_id", 0)
+        if uid <= after:
+            continue
+        after = uid
+        msg = u.get("message") or {}
+        if str((msg.get("chat") or {}).get("id", "")) != str(bot.TELEGRAM_CHAT_ID):
+            continue
+        rep = msg.get("reply_to_message") or {}
+        out.append(((msg.get("text") or "").strip(), rep.get("text") or rep.get("caption") or ""))
+    return after, out
+
+
+_hold_until = [0.0]                    # 텔레그램이 '너무 자주'라고 하면 이때까지 반복 알림 쉼
+
+
+def _send(bot, text, retry=False):
     try:
         bot._send_telegram(text)
         return True
     except Exception as e:
-        if "429" in str(e):            # 너무 자주 보냄 → 잠깐 쉼
-            time.sleep(2)
+        if "429" not in str(e):
+            return False
+        _hold_until[0] = time.time() + 3       # 여러 대가 동시에 보내면 자주 막힘 → 반복 알림만 잠깐 쉼
+        if retry:
+            time.sleep(1.5)
+            try:
+                bot._send_telegram(text)
+                return True
+            except Exception:
+                pass
         return False
 
 
-def parse_code(text, name):
-    """답장에서 숫자 4자리 → '1234'. 이름이 붙어 있으면(예: '3042 규남') 이 컴퓨터일 때만."""
-    digits = "".join(ch for ch in text if ch.isdigit())
-    if len(digits) != 4:
-        return None
+def for_me(text, reply, name):
+    """이 메시지가 이 컴퓨터한테 온 건지.
+    알림에 '답장'으로 보냈으면 그 알림을 보낸 컴퓨터만, '3042 규남' 처럼 이름 일부를 붙였으면
+    그 이름의 컴퓨터만, 그냥 숫자만 보냈으면 확인 창이 떠 있는 모든 컴퓨터."""
+    if "[" in reply:
+        return f"[{name}]" in reply
     rest = "".join(ch for ch in text if not ch.isdigit() and not ch.isspace())
-    if rest and rest not in name:
-        return None
-    return digits
+    if parse_code(text) and rest and rest not in name:
+        return False
+    return True
+
+
+def parse_code(text):
+    """메시지에서 숫자 4자리 → '1234'. 4자리가 아니면 None."""
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return digits if len(digits) == 4 else None
 
 
 # ==================== 확인 창이 떴을 때 ====================
@@ -255,8 +297,9 @@ def handle(bot, sct, rect, box, img):
         def _photo(c=crop):
             try:
                 bot._send_telegram_photo(
-                    f"🚨🚨 [{name}] 매크로 방지 확인 창! 숫자 4자리를 답장으로 보내면 봇이 입력하고 [확인]을 누름"
-                    f" (PC에서 직접 입력해도 됨)", jpeg_bytes(c, 2 if c.shape[1] < 500 else 1))
+                    f"🚨🚨 [{name}] 매크로 방지 확인 창! 숫자 4자리를 보내면 봇이 입력하고 [확인]을 누름"
+                    f" (PC에서 직접 입력해도 됨)\n여러 대가 동시에 뜨면: 이 사진을 꾹 눌러 '답장'으로 숫자를"
+                    f" 보내면 이 컴퓨터만 입력", jpeg_bytes(c, 2 if c.shape[1] < 500 else 1))
             except Exception as e:
                 print(f"  (텔레그램 사진 전송 실패: {e})")
         threading.Thread(target=_photo, daemon=True).start()
@@ -267,16 +310,18 @@ def handle(bot, sct, rect, box, img):
     gone_since = None
     while bot.alive and time.time() - t0 < GIVE_UP_SECS:
         now = time.time()
-        if tg and not acked and now - t0 < ALERT_SECS and now - last_alert >= ALERT_EVERY:
+        if tg and not acked and now - t0 < ALERT_SECS and now - last_alert >= ALERT_EVERY \
+                and now >= _hold_until[0]:
             n += 1
             last_alert = now
             left = max(0, int(30 - (now - t0)))
             _send(bot, f"🚨 [{name}] 매크로 방지 창! 남은 약 {left}초 — 숫자 4자리 답장 ({n})")
         if tg:
-            u = _latest_update(bot)
-            if u and u[0] > base_id and u[1] == str(bot.TELEGRAM_CHAT_ID):
-                base_id = u[0]
-                code = parse_code(u[2], name)
+            base_id, items = _new_updates(bot, base_id)
+            mine = [t for t, rp in items if for_me(t, rp, name)]       # 다른 컴퓨터 것은 무시
+            codes = [c for c in map(parse_code, mine) if c]
+            if mine:
+                code = codes[-1] if codes else None
                 if code:
                     acked = True
                     r, im, b = cur()
@@ -289,13 +334,14 @@ def handle(bot, sct, rect, box, img):
                         time.sleep(1.5)
                         r, im, b = cur()
                         if b is not None:
-                            _send(bot, f"⚠ [{name}] {code} 입력했는데 확인 창이 그대로예요 — 숫자를 다시 보내주세요")
+                            _send(bot, f"⚠ [{name}] {code} 입력했는데 확인 창이 그대로예요 — 숫자를 다시 보내주세요",
+                                  retry=True)
                             try:
-                                bot._send_telegram_photo(f"[{name}] 지금 확인 창",
+                                bot._send_telegram_photo(f"[{name}] 지금 확인 창 (여러 대면 이 사진에 답장)",
                                                          jpeg_bytes(im[b[1]:b[3], b[0]:b[2]], 2))
                             except Exception:
                                 pass
-                elif u[2]:
+                elif any(mine):
                     if not acked:
                         _send(bot, f"[{name}] 알림 멈춤 — 숫자 4자리를 보내면 입력해요 (PC에서 직접 해도 됨)")
                     acked = True
@@ -311,12 +357,13 @@ def handle(bot, sct, rect, box, img):
     if gone_since is None or time.time() - gone_since < 1.5:
         print("[정지] 확인 창이 안 사라짐 — 봇은 멈춘 상태로 둡니다 (확인 후 F8)")
         if tg:
-            _send(bot, f"🛑 [{name}] 매크로 방지 창이 안 풀렸어요 — 봇 정지 상태 (접속 끊겼을 수 있음)")
+            _send(bot, f"🛑 [{name}] 매크로 방지 창이 안 풀렸어요 — 봇 정지 상태 (접속 끊겼을 수 있음)",
+                  retry=True)
         return
     wait = np.random.uniform(*RESUME_WAIT)
     print(f"✅ 확인 창 사라짐 — {wait:.0f}초 뒤 이어서 진행")
     if tg:
-        _send(bot, f"✅ [{name}] 매크로 방지 통과 — {wait:.0f}초 뒤 이어서 진행")
+        _send(bot, f"✅ [{name}] 매크로 방지 통과 — {wait:.0f}초 뒤 이어서 진행", retry=True)
     time.sleep(wait)
     if was_running and bot.alive and not bot.running:
         bot.running = True
@@ -486,30 +533,31 @@ def practice(mod):
     print(f"연습 시작 — 텔레그램을 보고 숫자 4자리를 답장하세요 (정답 {code})")
     t0 = time.time()
     try:
-        bot._send_telegram_photo(f"🧪🚨 [{name}] 매크로 방지 연습! 숫자 4자리를 답장하세요 (30초)", buf.getvalue())
+        bot._send_telegram_photo(f"🧪🚨 [{name}] 매크로 방지 연습! 숫자 4자리를 보내세요 (30초)"
+                                 f"\n여러 대로 연습할 땐 이 사진을 꾹 눌러 '답장'으로 보내기", buf.getvalue())
     except Exception as e:
         print(f"[중단] 텔레그램 사진 전송 실패: {e}")
         return
     n, last = 0, 0.0
     while time.time() - t0 < 40:
         now = time.time()
-        if now - t0 < ALERT_SECS and now - last >= ALERT_EVERY:
+        if now - t0 < ALERT_SECS and now - last >= ALERT_EVERY and now >= _hold_until[0]:
             n += 1
             last = now
             _send(bot, f"🧪 [{name}] 연습 — 남은 약 {max(0, int(30 - (now - t0)))}초, 숫자 4자리 답장 ({n})")
-        u = _latest_update(bot)
-        if u and u[0] > base_id and u[1] == str(bot.TELEGRAM_CHAT_ID):
-            base_id = u[0]
-            got = parse_code(u[2], name)
+        base_id, items = _new_updates(bot, base_id)
+        mine = [t for t, rp in items if for_me(t, rp, name)]
+        if mine:
+            got = next((c for c in map(parse_code, reversed(mine)) if c), None)
             secs = time.time() - t0
             if got is None:
-                _send(bot, f"🧪 [{name}] '{u[2]}' 받음 — 숫자 4자리가 아니에요. 다시 보내보세요")
+                _send(bot, f"🧪 [{name}] '{mine[-1]}' 받음 — 숫자 4자리가 아니에요. 다시 보내보세요")
                 continue
             ok = got == code
             msg = (f"🧪 [{name}] {'✅ 맞음' if ok else '❌ 틀림 (정답 ' + code + ')'} — {secs:.1f}초 걸림"
                    + ("" if secs <= 30 else " (실제였으면 시간 초과)")
                    + "\n실제 상황이면 봇이 이 숫자를 입력하고 [확인]을 눌렀을 거예요")
-            _send(bot, msg)
+            _send(bot, msg, retry=True)
             print(msg)
             return
         time.sleep(0.4)
