@@ -1754,6 +1754,11 @@ def main():
         print(" 폰 텔레그램에 '현황' 이라고 보내면 스샷을 보내드립니다")
         print(" (특정 컴퓨터만 부르려면 '현황 규남' 처럼 이름 일부를 붙이세요)")
     keyboard.add_hotkey("f9", quit_all)
+    try:
+        import macro_guard              # 매크로 방지 확인 창이 뜨면 멈추고 알림
+        macro_guard.start(sys.modules[__name__])
+    except Exception as e:
+        print(f" (매크로 방지 창 감시를 못 켬: {e})")
     t = threading.Thread(target=worker, daemon=True)
     t.start()
     while alive:
@@ -1765,6 +1770,10 @@ if __name__ == "__main__":
     try:
         if len(sys.argv) > 1 and sys.argv[1] in ("캡처", "capture"):
             capture_items()
+            input("\n엔터를 누르면 창이 닫힙니다...")
+        elif len(sys.argv) > 1 and sys.argv[1] == "매크로검사":
+            import macro_guard
+            macro_guard.selftest(sys.modules[__name__])
             input("\n엔터를 누르면 창이 닫힙니다...")
         else:
             main()
