@@ -386,14 +386,15 @@ class Bot:
 
     def __getattr__(self, name):
         m, am = self.__dict__["m"], self.__dict__["am"]
-        if hasattr(m, name):
-            return getattr(m, name)
+        # 텔레그램 보내기는 항상 여기 것을 씀 — 봇 파일의 토큰이 비어 있어도 위에서 찾은 토큰으로 보냄
         if name == "_tg_urlopen":
             return _urlopen
         if name == "_send_telegram":
             return self._text
         if name == "_send_telegram_photo":
             return self._photo
+        if hasattr(m, name):
+            return getattr(m, name)
         if name == "release_keys":
             return lambda: None
         if name in ("human_click", "_gw") and am is not None:
@@ -520,10 +521,10 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, HERE)
     try:
-        try:
-            import auto_cook as _bot            # 식장이 폴더
-        except ImportError:
+        if os.path.exists(os.path.join(HERE, "auto_match.py")):
             import auto_match as _bot           # 주장이 폴더
+        else:
+            import auto_cook as _bot            # 식장이 폴더
         if len(sys.argv) > 1 and sys.argv[1] == "연습":
             practice(_bot)
         else:
