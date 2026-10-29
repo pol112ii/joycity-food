@@ -363,3 +363,79 @@ def selftest(bot):
     save_png(img, "macro_test.png")
     print(f"조이톡 창: {rect if rect else '못 찾음 → 주 모니터 전체'}")
     print("확인 창: " + (f"있음 {box}" if box else "없음") + "  (macro_test.png 저장)")
+
+
+# ==================== 연습 ====================
+
+def practice(bot):
+    """연습: 가짜 확인코드 그림을 텔레그램으로 보내고, 답장이 맞는지·몇 초 걸렸는지 알려줌 (클릭 안 함)."""
+    import random
+    from PIL import Image, ImageDraw, ImageFont
+    name = getattr(bot, "NOTIFY_NAME", "")
+    if not _tg_ok(bot):
+        print("[중단] auto_cook.py 에 TELEGRAM_TOKEN / TELEGRAM_CHAT_ID 가 비어 있어요")
+        return
+    code = "".join(random.choice("0123456789") for _ in range(4))
+    im = Image.new("RGB", (520, 300), (24, 26, 40))
+    d = ImageDraw.Draw(im)
+    try:
+        big = ImageFont.truetype("arial.ttf", 110)
+        small = ImageFont.truetype("malgun.ttf", 26)
+    except Exception:
+        big = small = ImageFont.load_default()
+    d.text((20, 15), "매크로 방지 확인 (연습)", fill=(230, 230, 230), font=small)
+    d.rectangle([60, 70, 460, 230], fill=(30, 30, 45))
+    d.text((95, 85), code, fill=(240, 180, 230), font=big)
+    d.line([70, 200, 450, 110], fill=(200, 200, 200), width=3)
+    import io
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=85)
+    u = _latest_update(bot)
+    base_id = u[0] if u else 0
+    print(f"연습 시작 — 텔레그램을 보고 숫자 4자리를 답장하세요 (정답 {code})")
+    t0 = time.time()
+    try:
+        bot._send_telegram_photo(f"🧪🚨 [{name}] 매크로 방지 연습! 숫자 4자리를 답장하세요 (30초)", buf.getvalue())
+    except Exception as e:
+        print(f"[중단] 텔레그램 사진 전송 실패: {e}")
+        return
+    n, last = 0, 0.0
+    while time.time() - t0 < 40:
+        now = time.time()
+        if now - t0 < ALERT_SECS and now - last >= ALERT_EVERY:
+            n += 1
+            last = now
+            _send(bot, f"🧪 [{name}] 연습 — 남은 약 {max(0, int(30 - (now - t0)))}초, 숫자 4자리 답장 ({n})")
+        u = _latest_update(bot)
+        if u and u[0] > base_id and u[1] == str(bot.TELEGRAM_CHAT_ID):
+            base_id = u[0]
+            got = parse_code(u[2], name)
+            secs = time.time() - t0
+            if got is None:
+                _send(bot, f"🧪 [{name}] '{u[2]}' 받음 — 숫자 4자리가 아니에요. 다시 보내보세요")
+                continue
+            ok = got == code
+            msg = (f"🧪 [{name}] {'✅ 맞음' if ok else '❌ 틀림 (정답 ' + code + ')'} — {secs:.1f}초 걸림"
+                   + ("" if secs <= 30 else " (실제였으면 시간 초과)")
+                   + "\n실제 상황이면 봇이 이 숫자를 입력하고 [확인]을 눌렀을 거예요")
+            _send(bot, msg)
+            print(msg)
+            return
+        time.sleep(0.4)
+    _send(bot, f"🧪 [{name}] 연습 — 40초 동안 답장이 없었어요")
+    print("40초 동안 답장 없음")
+
+
+if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, HERE)
+    try:
+        import auto_cook as _bot
+        if len(sys.argv) > 1 and sys.argv[1] == "연습":
+            practice(_bot)
+        else:
+            selftest(_bot)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    input("\n엔터를 누르면 창이 닫힙니다...")
