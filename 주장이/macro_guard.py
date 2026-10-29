@@ -523,7 +523,7 @@ if __name__ == "__main__":
         try:
             import auto_cook as _bot            # 식장이 폴더
         except ImportError:
-            import ring_cycle as _bot           # 주장이 폴더
+            import auto_match as _bot           # 주장이 폴더
         if len(sys.argv) > 1 and sys.argv[1] == "연습":
             practice(_bot)
         else:
