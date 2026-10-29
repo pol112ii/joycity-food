@@ -63,7 +63,7 @@ MOVE_TIME = (0.08, 0.20)            # 바늘을 옮길 때 마우스 이동 시�
 LOOP_DT = 0.004                     # 화면 보는 간격(초)
 DEBUG = False                       # True 면 게임 중 상태를 자주 찍음
 SAVE_DEBUG_SHOT = True              # 판 시작 때 화면 인식 결과를 sew_debug.png 로 저장 (문제 생기면 보내주세요)
-DUMP_FRAMES = True                  # 첫 판 40초 동안 화면을 sew_frames 폴더에 저장 (분석용 — 다 되면 False)
+DUMP_FRAMES = False                 # 첫 판 40초 동안 화면을 sew_frames 폴더에 저장 (분석용 — 다 되면 False)
 
 # 사람처럼 쉬기 (판과 판 사이에만 쉼. REST = False 면 안 쉼)
 REST = False                        # 의장이는 쉬지 않고 계속 (True 로 바꾸면 아래 설정대로 쉼)
