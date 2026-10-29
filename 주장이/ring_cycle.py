@@ -1286,6 +1286,11 @@ def main():
     print("=" * 56)
     keyboard.add_hotkey("f8", toggle)
     keyboard.add_hotkey("f9", quit_all)
+    try:
+        import macro_guard              # 매크로 방지 확인 창이 뜨면 멈추고 알림
+        macro_guard.start(sys.modules[__name__])
+    except Exception as e:
+        print(f" (매크로 방지 창 감시를 못 켬: {e})")
     t = threading.Thread(target=worker, daemon=True)
     t.start()
     while alive:

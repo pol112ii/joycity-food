@@ -21,6 +21,11 @@ import threading
 
 import numpy as np
 
+# ----- 텔레그램 (주장이 폴더에서만 채움 — 식장이는 auto_cook.py 의 설정을 그대로 씀) -----
+TELEGRAM_TOKEN = ""      # ← 봇 토큰 (저장소가 공개라서 깃허브엔 안 올림)
+TELEGRAM_CHAT_ID = ""    # ← chat_id
+NOTIFY_NAME = ""         # ← 알림 앞에 붙는 이름 (예: "정희꾸린노트북")
+
 CHECK_SEC = 1.0          # 감시 간격(초)
 ALERT_EVERY = 1.0        # 텔레그램 알림 간격(초) — 텔레그램은 1초에 1번보다 자주 보내면 막힘
 ALERT_SECS = 32          # 알림을 계속 보내는 최대 시간(초) — 확인 창 제한시간 30초
@@ -347,15 +352,98 @@ def _watch(bot):
                 print(f"  (매크로 방지 처리 중 오류: {e})")
 
 
-def start(bot):
+# ==================== 봇 연결 (식장이/주장이 공통) ====================
+
+_tg_ctx = None
+
+
+def _urlopen(url_or_req, data=None, timeout=30):
+    import ssl
+    import urllib.request
+    import urllib.error
+    global _tg_ctx
+    try:
+        return urllib.request.urlopen(url_or_req, data=data, timeout=timeout, context=_tg_ctx)
+    except urllib.error.URLError as e:
+        if _tg_ctx is None and isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError):
+            _tg_ctx = ssl._create_unverified_context()      # 보안프로그램 HTTPS 검사 대응
+            return urllib.request.urlopen(url_or_req, data=data, timeout=timeout, context=_tg_ctx)
+        raise
+
+
+class Bot:
+    """봇 파일(auto_cook / ring_cycle)마다 다른 이름을 하나로 맞춰주는 연결."""
+
+    def __init__(self, mod):
+        self.__dict__["m"] = mod
+        am = getattr(mod, "am", None)
+        self.__dict__["am"] = am
+        tok = getattr(mod, "TELEGRAM_TOKEN", "") or TELEGRAM_TOKEN
+        cid = getattr(mod, "TELEGRAM_CHAT_ID", "") or TELEGRAM_CHAT_ID
+        self.__dict__["TELEGRAM_TOKEN"] = tok
+        self.__dict__["TELEGRAM_CHAT_ID"] = cid
+        self.__dict__["NOTIFY_NAME"] = getattr(mod, "NOTIFY_NAME", "") or NOTIFY_NAME or "PC"
+
+    def __getattr__(self, name):
+        m, am = self.__dict__["m"], self.__dict__["am"]
+        if hasattr(m, name):
+            return getattr(m, name)
+        if name == "_tg_urlopen":
+            return _urlopen
+        if name == "_send_telegram":
+            return self._text
+        if name == "_send_telegram_photo":
+            return self._photo
+        if name == "release_keys":
+            return lambda: None
+        if name in ("human_click", "_gw") and am is not None:
+            return getattr(am, name)
+        if name == "keyboard":
+            import keyboard
+            return keyboard
+        if name == "retry_at":
+            return None
+        raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        m, am = self.__dict__["m"], self.__dict__["am"]
+        if name == "retry_at" and not hasattr(m, "retry_at"):
+            return
+        setattr(m, name, value)
+        if name == "running" and am is not None:
+            am.running = value
+
+    def _text(self, text):
+        import urllib.parse
+        url = f"https://api.telegram.org/bot{self.TELEGRAM_TOKEN}/sendMessage"
+        data = urllib.parse.urlencode({"chat_id": self.TELEGRAM_CHAT_ID, "text": text}).encode()
+        _urlopen(url, data=data, timeout=10)
+
+    def _photo(self, caption, jpeg):
+        import random
+        import urllib.request
+        b = "----guard" + str(random.randint(10 ** 9, 10 ** 10))
+        f = lambda n, v: (f"--{b}\r\nContent-Disposition: form-data; name=\"{n}\"\r\n\r\n{v}\r\n").encode()
+        body = b"".join([f("chat_id", self.TELEGRAM_CHAT_ID), f("caption", caption[:1024]),
+                         f"--{b}\r\n".encode(),
+                         b'Content-Disposition: form-data; name="photo"; filename="p.jpg"\r\n'
+                         b"Content-Type: image/jpeg\r\n\r\n", jpeg, b"\r\n", f"--{b}--\r\n".encode()])
+        req = urllib.request.Request(f"https://api.telegram.org/bot{self.TELEGRAM_TOKEN}/sendPhoto", data=body)
+        req.add_header("Content-Type", f"multipart/form-data; boundary={b}")
+        _urlopen(req, timeout=30)
+
+
+def start(mod):
+    bot = Bot(mod)
     threading.Thread(target=_watch, args=(bot,), daemon=True).start()
     print(" 매크로 방지 확인 창 감시 중 — 뜨면 봇을 멈추고 " +
           ("텔레그램으로 계속 알림" if _tg_ok(bot) else "알림 (텔레그램 설정이 없어서 화면에만)"))
 
 
-def selftest(bot):
+def selftest(mod):
     """지금 화면에 확인 창이 있는지 검사하고 macro_test.png 로 저장."""
     import mss
+    bot = Bot(mod)
     with mss.mss() as sct:
         rect = main_rect(bot)
         img = grab(sct, rect)
@@ -367,13 +455,15 @@ def selftest(bot):
 
 # ==================== 연습 ====================
 
-def practice(bot):
+def practice(mod):
     """연습: 가짜 확인코드 그림을 텔레그램으로 보내고, 답장이 맞는지·몇 초 걸렸는지 알려줌 (클릭 안 함)."""
     import random
+    bot = mod if isinstance(mod, Bot) else Bot(mod)
     from PIL import Image, ImageDraw, ImageFont
     name = getattr(bot, "NOTIFY_NAME", "")
     if not _tg_ok(bot):
-        print("[중단] auto_cook.py 에 TELEGRAM_TOKEN / TELEGRAM_CHAT_ID 가 비어 있어요")
+        print("[중단] 텔레그램 설정(TELEGRAM_TOKEN / TELEGRAM_CHAT_ID)이 비어 있어요 — "
+              "식장이는 auto_cook.py, 주장이는 macro_guard.py 맨 위에 넣기")
         return
     code = "".join(random.choice("0123456789") for _ in range(4))
     im = Image.new("RGB", (520, 300), (24, 26, 40))
@@ -430,7 +520,10 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, HERE)
     try:
-        import auto_cook as _bot
+        try:
+            import auto_cook as _bot            # 식장이 폴더
+        except ImportError:
+            import ring_cycle as _bot           # 주장이 폴더
         if len(sys.argv) > 1 and sys.argv[1] == "연습":
             practice(_bot)
         else:

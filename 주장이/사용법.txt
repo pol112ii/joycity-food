@@ -158,3 +158,14 @@
       input_test.py      '비정상적 입력' 원인 찾기용 진단 도구
       measure.py         마우스 위치의 좌표/색 보기
       arrange_windows.py 창 배치 저장/복원 (이제 안 해도 됨)
+
+--------------------------------------------------------------
+ 매크로 방지 확인 창 (마결자동 ring_cycle.py)
+--------------------------------------------------------------
+  - macro_guard.py 맨 위에 TELEGRAM_TOKEN / TELEGRAM_CHAT_ID / NOTIFY_NAME 넣기
+    (식장이 auto_cook.py 에 있는 것과 같은 토큰·chat_id, 이름만 컴퓨터마다 다르게)
+  - py ring_cycle.py 만 실행하면 감시도 같이 켜짐 (macro_guard.py 는 같은 폴더에)
+  - 확인 창이 뜨면 봇 정지 → 텔레그램에 사진 + 1초마다 알림
+    → 숫자 4자리를 답장하면 봇이 입력하고 [확인] (PC 에서 직접 입력해도 됨)
+    → 창이 사라지면 이어서 진행
+  - 연습:  py macro_guard.py 연습      검사:  py macro_guard.py
