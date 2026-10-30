@@ -762,6 +762,7 @@ class Sewing:
         self.pend = {}                        # 반응을 기다리는 키 동작 {키: (시각, 누름?)}
         self.log_i = 0
         self.noresp = 0
+        self.got_resp = False                 # 이번 판에 키를 눌러서 버튼이 바뀌는 걸 한 번이라도 봤는지
         self.iter_dt = 0.02                   # 한 바퀴(화면 읽기+계산) 걸리는 시간
         self.dts = []
         self.dump = _dumped[0] < DUMP_GAMES
@@ -1060,13 +1061,16 @@ class Sewing:
                 lo = max(self.tf_prev, t)
                 self.lat = (self.lat + [(lo + tf) / 2 - t])[-20:]
                 del self.pend[key]
+                self.got_resp = True
+                self.noresp = 0
             elif btn[c] == on:
                 del self.pend[key]                 # 이미 그 상태였음 → 못 잼
-            elif tf - t > 1.0:
-                del self.pend[key]                 # 1초가 지나도 버튼이 안 바뀜 = 키가 게임에 안 감
+            elif tf - t > (1.0 if self.got_resp else 0.6):
+                del self.pend[key]                 # 버튼이 안 바뀜 = 키가 게임에 안 감 (다른 창이 선택돼 있음)
                 if on:
                     self.noresp += 1
-                    if self.noresp >= 3:
+                    # 판 시작 때 한 번도 반응이 없으면 바로 (띠를 놓치기 전에), 게임 중엔 3번 연속일 때
+                    if self.noresp >= (3 if self.got_resp else 1):
                         self.noresp = 0
                         print("  [주의] 키를 눌러도 버튼이 안 바뀜 → 의장이 창을 선택하려고 제목줄 클릭")
                         self.keys.release_all()

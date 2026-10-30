@@ -53,6 +53,9 @@ SELL = ("결혼반지",)                 # 리어카맨에게 팔 것
 FOOD = "아까비깡"                    # 팔기 전에 아이템 창에서 전부 더블클릭해서 먹을 것
 MAX_ROUNDS = 25                     # 한 바퀴에 만들기 최대 횟수 (보통 20번에 재료가 떨어짐)
 CART_WAIT = 20                      # 고물소환 후 리어카맨이 나타나길 기다리는 시간(초)
+CART_OPEN_WAIT = 3.0                # 리어카맨을 누른 뒤 되팔기 창이 뜨길 기다리는 시간(초). 이 안에 또 누르지 않음
+                                    # (창이 늦게 뜨는 컴퓨터에서 또 누르면 그 자리 바닥 재료를 주워버림)
+PILE_MARGIN = 10                    # 바닥 재료 무더기에서 이만큼(px) 안쪽은 리어카맨을 누르지 않음 (재료가 주워짐)
 SPRITE_SURE = 0.62                  # 바닥 재료 그림 일치 기준 (0~1, 높을수록 엄격). 석분은 무더기끼리
                                     # 많이 겹쳐서 0.6대로 나옴 — 주운 뒤 아이템 창으로 확인하니 안전
 LABEL_SURE = 0.60                   # 리어카맨 이름 글자 일치 기준
@@ -1009,7 +1012,25 @@ def locate_near(sct, c, radius):
     return min(cands, key=lambda q: (q[0] - c[0]) ** 2 + (q[1] - c[1]) ** 2)
 
 
-def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6):
+def pile_boxes(sct):
+    """바닥 재료 무더기가 있는 자리들 (x0, y0, x1, y1) — 리어카맨을 누를 때 이 위는 피함."""
+    boxes = []
+    for name in PILES:
+        key = "spr_" + name
+        if key not in _sprites:
+            continue
+        found = find_sprite(sct, key, SPRITE_SURE)
+        f = _best_size.get(key, scale())
+        h, w = _sprites[key].shape[0] * f / 2 + PILE_MARGIN, _sprites[key].shape[1] * f / 2 + PILE_MARGIN
+        boxes += [(cx - w, cy - h, cx + w, cy + h) for cx, cy, _ in found]
+    return boxes
+
+
+def _on_pile(x, y, boxes):
+    return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in boxes)
+
+
+def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=()):
     """걸어 다니는 리어카맨을 따라가서 누름 → (누른 x, y, 리어카맨 위치) 또는 None(놓침).
 
     '방금 찍은 화면'에서 찾은 위치로만 누름 — 예전 위치로는 절대 안 누름.
@@ -1017,6 +1038,7 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6):
       1) 리어카맨 쪽으로 부드럽게 다가감
       2) 짧은 간격으로 계속 다시 찾으면서 커서를 몸통 위로 맞춤 (따라감)
       3) 방금 찾은 몸통(+ 누르는 순간까지 걸어갈 만큼) 위에 커서가 있으면 그때 누름
+         — 단, 그 자리가 바닥 재료 무더기(avoid) 위면 누르지 않고 리어카맨이 비켜날 때까지 따라감
     """
     k = scale()
     p = locate_near(sct, cart, 250)
@@ -1059,7 +1081,7 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6):
         # 지금 누르면 누르는 순간 몸통이 있을 자리
         cx, cy = target(q, vx, vy, (now - tq) + 0.03)
         mx, my = pyautogui.position()
-        if abs(mx - cx) <= tol and abs(my - cy) <= tol and jerk <= tol:
+        if abs(mx - cx) <= tol and abs(my - cy) <= tol and jerk <= tol and not _on_pile(mx, my, avoid):
             pyautogui.mouseDown()
             time.sleep(random.uniform(0.04, 0.07))
             pyautogui.mouseUp()
@@ -1118,9 +1140,10 @@ def sell_all(sct):
     tol = max(5, int(0.12 * dy))              # 커서가 몸통에서 이만큼 안이면 누름
     clicks = []                               # 이번 리어카맨을 누른 자리 (안 움직이는지 보려고)
     opened = False
+    avoid = pile_boxes(sct)                   # 바닥 재료 위에서는 누르지 않음 (주워버리니까)
     for attempt in range(5):
         for sx, sy in spots:
-            res = chase_click(sct, cart, body, (sx, sy), tol=tol)
+            res = chase_click(sct, cart, body, (sx, sy), tol=tol, avoid=avoid)
             if res is None:
                 # 놓침 → 화면 전체에서 다시 찾음 (방금 보던 곳에서 가까운 것)
                 found = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), _bad_carts)
@@ -1132,7 +1155,7 @@ def sell_all(sct):
             tx, ty, cart = res
             clicks.append(cart[:2])
             print(f"  리어카맨 클릭 → ({tx}, {ty})  (이름 일치 {cart[2]:.2f})")
-            if wait_title("sell", True, 1.2):
+            if wait_title("sell", True, CART_OPEN_WAIT):
                 opened = True
                 break
         if opened:
