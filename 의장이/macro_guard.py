@@ -27,7 +27,7 @@ TELEGRAM_TOKEN = ""      # ← 봇 토큰 (저장소가 공개라서 깃허브�
 TELEGRAM_CHAT_ID = ""    # ← chat_id
 NOTIFY_NAME = ""         # ← 알림 앞에 붙는 이름 (예: "정희꾸린노트북")
 
-CHECK_SEC = 1.0          # 감시 간격(초)
+CHECK_SEC = 0.5          # 감시 간격(초) — 뜨면 0.2초 뒤 한 번 더 보고 바로 알림
 ALERT_EVERY = 1.0        # 텔레그램 알림 간격(초) — 텔레그램은 1초에 1번보다 자주 보내면 막힘
 ALERT_SECS = 32          # 알림을 계속 보내는 최대 시간(초) — 확인 창 제한시간 30초
 GIVE_UP_SECS = 45        # 이만큼 지나도 확인 창이 안 사라지면 정지한 채로 둠
@@ -199,24 +199,51 @@ def _new_updates(bot, after):
 
 
 _hold_until = [0.0]                    # 텔레그램이 '너무 자주'라고 하면 이때까지 반복 알림 쉼
+_fails = [0]                           # 이번 확인 창에서 텔레그램 보내기 실패 횟수
+
+
+def log(msg):
+    """macro_log.txt 에 시각과 함께 기록 (알림이 안 왔을 때 원인 찾기용)."""
+    try:
+        with open(os.path.join(HERE, "macro_log.txt"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%m-%d %H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d} {msg}\n")
+    except Exception:
+        pass
 
 
 def _send(bot, text, retry=False):
-    try:
-        bot._send_telegram(text)
-        return True
-    except Exception as e:
-        if "429" not in str(e):
-            return False
-        _hold_until[0] = time.time() + 3       # 여러 대가 동시에 보내면 자주 막힘 → 반복 알림만 잠깐 쉼
-        if retry:
-            time.sleep(1.5)
-            try:
-                bot._send_telegram(text)
-                return True
-            except Exception:
-                pass
-        return False
+    for attempt in range(2 if retry else 1):
+        try:
+            bot._send_telegram(text)
+            log("텔레그램 보냄: " + text[:40])
+            return True
+        except Exception as e:
+            _fails[0] += 1
+            log(f"텔레그램 실패: {e}")
+            if _fails[0] in (1, 5, 20):
+                print(f"  [텔레그램 보내기 실패] {e}  (인터넷/토큰 확인 — macro_log.txt 에 기록)")
+            if "429" in str(e):
+                _hold_until[0] = time.time() + 3   # 여러 대가 동시에 보내면 자주 막힘 → 반복 알림만 잠깐 쉼
+            if attempt == 0 and retry:
+                time.sleep(1.5)
+    return False
+
+
+_busy = [False]
+
+
+def _send_bg(bot, text):
+    """기다리지 않고 보냄 (인터넷이 느려도 감시/답장 확인이 멈추지 않게). 앞의 것이 아직 가는 중이면 건너뜀."""
+    if _busy[0]:
+        return
+    _busy[0] = True
+
+    def go():
+        try:
+            _send(bot, text)
+        finally:
+            _busy[0] = False
+    threading.Thread(target=go, daemon=True).start()
 
 
 def for_me(text, reply, name):
@@ -280,6 +307,17 @@ def handle(bot, sct, rect, box, img):
     print(" 🚨 매크로 방지 확인 창이 떴어요 — 봇을 멈췄습니다.")
     print("    숫자 4자리를 PC 에서 직접 입력하거나, 텔레그램으로 숫자를 보내주세요 (30초 안에)")
     print("!" * 56)
+    log("확인 창 발견")
+    _fails[0] = 0
+    tg = _tg_ok(bot)
+    if tg:
+        # 제일 먼저 짧은 글 알림 (사진/답장 확인 준비보다 먼저 — 몇 초라도 빨리)
+        _busy[0] = False
+        _send_bg(bot, f"🚨🚨 [{name}] 매크로 방지 확인 창! 숫자 4자리를 보내주세요 (30초)")
+    else:
+        print("  [주의] 텔레그램 설정(TELEGRAM_TOKEN / TELEGRAM_CHAT_ID)이 비어 있어서 알림을 못 보냄"
+              " — macro_guard.py 맨 위를 확인하세요")
+        log("텔레그램 설정 없음 → 알림 못 보냄")
     save_png(img, "macro_debug.png")
 
     def cur():
@@ -287,7 +325,6 @@ def handle(bot, sct, rect, box, img):
         im = grab(sct, r)
         return r, im, detect(im)
 
-    tg = _tg_ok(bot)
     base_id = 0
     if tg:
         u = _latest_update(bot)
@@ -305,8 +342,8 @@ def handle(bot, sct, rect, box, img):
         threading.Thread(target=_photo, daemon=True).start()
 
     acked = False
-    last_alert = 0.0
-    n = 0
+    last_alert = time.time()
+    n = 1
     gone_since = None
     while bot.alive and time.time() - t0 < GIVE_UP_SECS:
         now = time.time()
@@ -315,7 +352,7 @@ def handle(bot, sct, rect, box, img):
             n += 1
             last_alert = now
             left = max(0, int(30 - (now - t0)))
-            _send(bot, f"🚨 [{name}] 매크로 방지 창! 남은 약 {left}초 — 숫자 4자리 답장 ({n})")
+            _send_bg(bot, f"🚨 [{name}] 매크로 방지 창! 남은 약 {left}초 — 숫자 4자리 답장 ({n})")
         if tg:
             base_id, items = _new_updates(bot, base_id)
             mine = [t for t, rp in items if for_me(t, rp, name)]       # 다른 컴퓨터 것은 무시
@@ -389,9 +426,17 @@ def _watch(bot):
                 hits = 0
                 continue
             hits += 1
-            if hits < 2:                       # 두 번 연속 보일 때만 (잘못 알아보는 것 방지)
-                time.sleep(0.3)
-                continue
+            if hits < 2:                       # 두 번 연속 보일 때만 (잘못 알아보는 것 방지) — 0.2초 뒤 바로 다시 봄
+                time.sleep(0.2)
+                try:
+                    img2 = grab(sct, rect)
+                    box2 = detect(img2)
+                except Exception:
+                    box2 = None
+                if box2 is None:
+                    hits = 0
+                    continue
+                img, box = img2, box2
             hits = 0
             try:
                 handle(bot, sct, rect, box, img)
@@ -481,11 +526,29 @@ class Bot:
         _urlopen(req, timeout=30)
 
 
+def check_telegram(bot):
+    """켤 때 텔레그램에 실제로 닿는지 확인 (메시지는 안 보냄)."""
+    try:
+        r = json.loads(bot._tg_urlopen(f"https://api.telegram.org/bot{bot.TELEGRAM_TOKEN}/getMe",
+                                       timeout=10).read().decode())
+        if r.get("ok"):
+            print(f" 텔레그램 연결 확인 ✓ (봇 @{r['result'].get('username')}, 알림 이름 [{bot.NOTIFY_NAME}])")
+            log("시작: 텔레그램 연결 OK")
+            return True
+        print(f" [주의] 텔레그램 응답 이상: {r}")
+    except Exception as e:
+        print(f" [주의] 텔레그램 연결 안 됨: {e} — 토큰/인터넷 확인. 이대로면 매크로 창이 떠도 알림이 안 감")
+        log(f"시작: 텔레그램 연결 실패 {e}")
+    return False
+
+
 def start(mod):
     bot = Bot(mod)
     threading.Thread(target=_watch, args=(bot,), daemon=True).start()
     print(" 매크로 방지 확인 창 감시 중 — 뜨면 봇을 멈추고 " +
           ("텔레그램으로 계속 알림" if _tg_ok(bot) else "알림 (텔레그램 설정이 없어서 화면에만)"))
+    if _tg_ok(bot):
+        threading.Thread(target=check_telegram, args=(bot,), daemon=True).start()
 
 
 def selftest(mod):
