@@ -1030,7 +1030,7 @@ def _on_pile(x, y, boxes):
     return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in boxes)
 
 
-def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=()):
+def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=(), alts=()):
     """걸어 다니는 리어카맨을 따라가서 누름 → (누른 x, y, 리어카맨 위치) 또는 None(놓침).
 
     '방금 찍은 화면'에서 찾은 위치로만 누름 — 예전 위치로는 절대 안 누름.
@@ -1038,16 +1038,27 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=()):
       1) 리어카맨 쪽으로 부드럽게 다가감
       2) 짧은 간격으로 계속 다시 찾으면서 커서를 몸통 위로 맞춤 (따라감)
       3) 방금 찾은 몸통(+ 누르는 순간까지 걸어갈 만큼) 위에 커서가 있으면 그때 누름
-         — 단, 그 자리가 바닥 재료 무더기(avoid) 위면 누르지 않고 리어카맨이 비켜날 때까지 따라감
+         — 단, 그 자리가 바닥 재료 무더기(avoid) 위면 몸통의 다른 자리(alts)를 누르고,
+           몸통 어디를 눌러도 재료 위면 누르지 않고 리어카맨이 비켜날 때까지 따라감
     """
     k = scale()
     p = locate_near(sct, cart, 250)
     if p is None:
         return None
+    offs = [extra] + [o for o in alts if o != extra]
+    aim = [extra]                             # 지금 노리는 몸통 자리
 
-    def target(q, vx, vy, ahead):
+    def target(q, vx, vy, ahead, off=None):
+        o = off or aim[0]
         bx, by = body(q)
-        return int(bx + extra[0] + vx * ahead), int(by + extra[1] + vy * ahead)
+        return int(bx + o[0] + vx * ahead), int(by + o[1] + vy * ahead)
+
+    def safe_spot(q, vx, vy, ahead):
+        """몸통에서 재료 무더기 위가 아닌 자리 (먼저 정한 자리부터). 없으면 None."""
+        for o in offs:
+            if not _on_pile(*target(q, vx, vy, ahead, o), avoid):
+                return o
+        return None
 
     tx, ty = target(p, 0, 0, 0)
     am.smooth_move_to(tx, ty, random.uniform(0.18, 0.28), bow=6)
@@ -1078,10 +1089,14 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=()):
                 nvx = nvy = 0.0
             vx, vy = 0.5 * vx + 0.5 * nvx, 0.5 * vy + 0.5 * nvy
         last, lt = q, tq
+        o = safe_spot(q, vx, vy, (now - tq) + 0.03 + look)
+        if o is not None:
+            aim[0] = o
         # 지금 누르면 누르는 순간 몸통이 있을 자리
         cx, cy = target(q, vx, vy, (now - tq) + 0.03)
         mx, my = pyautogui.position()
-        if abs(mx - cx) <= tol and abs(my - cy) <= tol and jerk <= tol and not _on_pile(mx, my, avoid):
+        if o is not None and abs(mx - cx) <= tol and abs(my - cy) <= tol and jerk <= tol \
+                and not _on_pile(mx, my, avoid):
             pyautogui.mouseDown()
             time.sleep(random.uniform(0.04, 0.07))
             pyautogui.mouseUp()
@@ -1137,13 +1152,15 @@ def sell_all(sct):
     # 몸통 주변을 조금씩 다르게 눌러봄 (가운데 → 조금 위 → 조금 아래). 몸통 크기에 맞춰 비율로
     dy = abs(off["off_y"]) * k
     spots = [(0, 0), (0, -int(0.18 * dy)), (int(0.1 * dy), int(0.18 * dy))]
+    # 바닥 재료 무더기 위에 겹쳤을 때 대신 누를 몸통 자리 (위쪽/좌우)
+    alts = spots + [(-int(0.15 * dy), -int(0.08 * dy)), (int(0.15 * dy), -int(0.08 * dy)), (0, -int(0.3 * dy))]
     tol = max(5, int(0.12 * dy))              # 커서가 몸통에서 이만큼 안이면 누름
     clicks = []                               # 이번 리어카맨을 누른 자리 (안 움직이는지 보려고)
     opened = False
     avoid = pile_boxes(sct)                   # 바닥 재료 위에서는 누르지 않음 (주워버리니까)
     for attempt in range(5):
         for sx, sy in spots:
-            res = chase_click(sct, cart, body, (sx, sy), tol=tol, avoid=avoid)
+            res = chase_click(sct, cart, body, (sx, sy), tol=tol, avoid=avoid, alts=alts)
             if res is None:
                 # 놓침 → 화면 전체에서 다시 찾음 (방금 보던 곳에서 가까운 것)
                 found = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), _bad_carts)
