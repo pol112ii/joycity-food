@@ -63,7 +63,8 @@ MOVE_TIME = (0.08, 0.20)            # 바늘을 옮길 때 마우스 이동 시�
 LOOP_DT = 0.004                     # 화면 보는 간격(초)
 DEBUG = False                       # True 면 게임 중 상태를 자주 찍음
 SAVE_DEBUG_SHOT = True              # 판 시작 때 화면 인식 결과를 sew_debug.png 로 저장 (문제 생기면 보내주세요)
-DUMP_FRAMES = False                 # 첫 판 40초 동안 화면을 sew_frames 폴더에 저장 (분석용 — 다 되면 False)
+DUMP_GAMES = 2                      # 켠 뒤 처음 이만큼 판은 한 판 전체 화면/기록을 sew_frames 폴더에 저장
+                                    # (분석용 — 폴더를 압축해서 보내주면 띠를 왜 놓쳤는지 볼 수 있음. 다 되면 0)
 
 # 사람처럼 쉬기 (판과 판 사이에만 쉼. REST = False 면 안 쉼)
 REST = False                        # 의장이는 쉬지 않고 계속 (True 로 바꾸면 아래 설정대로 쉼)
@@ -253,12 +254,6 @@ class Geo:
         self.line = line if line is not None else self.clip + REF_LINE_ROWS * self.rh
         hit = int(np.floor((self.line - self.clip) / self.rh - 0.45))
         self.hit = hit if HIT_ROW - 2 <= hit <= HIT_ROW + 2 else HIT_ROW
-        hw = max(1, int(round(3.0 * s)))
-        self.cx = []
-        for k in range(5):
-            for c0 in (REF_YCOL0, REF_BCOL0):
-                x = int(round(L + (c0 + REF_STEP * k - 0.25) * s))
-                self.cx.append((x - hw, x + hw + 1))
         self.ya = int(np.floor(self.clip))
         r0, r1 = [], []
         for r in range(SEE_ROWS):
@@ -268,7 +263,7 @@ class Geo:
             r1.append(b)
         self.r0, self.r1 = np.array(r0), np.array(r1)
         self.yb = self.ya + int(self.r1.max()) + 1
-        self.need = [0.4 * (self.r1 - self.r0) * (x1 - x0) for (x0, x1) in self.cx]
+        self.set_x(L - 0.25 * s, s)
         self.ny = (int(round(T + REF_NEEDLE_Y[0] * s)), int(round(T + REF_NEEDLE_Y[1] * s)) + 1)
         self.bar = (L + REF_BAR[0] * s, L + REF_BAR[1] * s,
                     int(round(T + REF_BAR[2] * s)), int(round(T + REF_BAR[3] * s)) + 1)
@@ -278,19 +273,58 @@ class Geo:
         # 게임 중에 찍을 범위 (천 + 점수 막대 + 버튼)
         self.crop = (max(0, int(L) - 4), max(0, int(T) - 4), int(np.ceil(R)) + 4, self.by[1] + 4)
 
+    def set_x(self, xa, xs):
+        """띠 자리 가로 위치: 화면 x = xa + xs * (영상 기준 x).  처음엔 천 상자로 정하고,
+        게임 중에 실제로 보이는 띠 위치로 다시 맞춤 (창 크기/배율이 달라도 5번째 칸까지 정확히)."""
+        self.xa, self.xs = xa, xs
+        hw = max(1, int(round(3.0 * self.s)))
+        self.cx = []
+        for k in range(5):
+            for c0 in (REF_YCOL0, REF_BCOL0):
+                x = int(round(xa + (c0 + REF_STEP * k) * xs))
+                self.cx.append((x - hw, x + hw + 1))
+        self.need = [0.4 * (self.r1 - self.r0) * (x1 - x0) for (x0, x1) in self.cx]
+
+    def col_x(self, i):
+        """띠 자리 i 의 가운데 x."""
+        return self.xa + ((REF_YCOL0, REF_BCOL0)[i % 2] + REF_STEP * (i // 2)) * self.xs
+
     def moved(self, dx, dy):
         """좌표 기준을 옮긴 Geo (잘라 찍은 그림용)."""
         L, T, R, B = self.box
         g = Geo((L - dx, T - dy, R - dx, B - dy), self.line - dy)
         g.hit, g.line_found = self.hit, self.line_found
+        g.set_x(self.xa - dx, self.xs)
         return g
 
     def lane_x(self, k):
-        return self.L + ((REF_YCOL0 + REF_BCOL0) / 2 + REF_STEP * k) * self.s
+        return self.xa + ((REF_YCOL0 + REF_BCOL0) / 2 + REF_STEP * k) * self.xs
+
+    def lanes_visible(self, img):
+        """칸마다 천이 화면에 보이는지 (다른 창에 가려졌으면 False) — 천 위쪽과 바늘 높이를 봄."""
+        out = []
+        b, g, r = img[..., 0], img[..., 1], img[..., 2]
+        mx = np.maximum(np.maximum(b, g), r)
+        mn = np.minimum(np.minimum(b, g), r)
+        cloth = ((mx - mn < 26) & (mn > 100) & (mx < 215)) | (mn > 215)          # 회색 천 / 흰 바늘
+        cloth |= (r > 140) & (g > b + 60) & (b < 130)                            # 노란 띠
+        cloth |= (b > r + 60) & (b > g + 20) & (b > 90)                          # 파란 띠
+        cloth |= (r > 110) & (r > g + 60) & (r > b + 60)                         # 빨간 실선
+        y0, y1 = int(self.T + 4 * self.s), int(self.ny[1])
+        for k in range(5):
+            x0 = int(self.xa + (REF_STEP * k + 6) * self.xs)
+            x1 = int(self.xa + (REF_STEP * (k + 1) - 6) * self.xs)
+            reg = cloth[max(0, y0):y1, max(0, x0):x1]
+            out.append(bool(reg.size) and reg.mean() > 0.6)
+        return out
 
     def occupancy(self, img):
-        """10개 띠 자리 x 18줄 — 각 칸 가운데에 띠 색이 있으면 True."""
+        """10개 띠 자리 x 18줄 — (띠 색이 있으면 True, 그 칸이 화면에 보이면 True).
+
+        다른 창에 가려진 칸은 '보이지 않음' 으로 따로 알려줌 → 띠 기억을 지우지 않음.
+        """
         occ = np.zeros((NCOL, SEE_ROWS), bool)
+        vis = np.ones((NCOL, SEE_ROWS), bool)
         for i, (x0, x1) in enumerate(self.cx):
             sub = img[self.ya:self.yb, x0:x1]
             b, g, r = sub[..., 0], sub[..., 1], sub[..., 2]
@@ -300,7 +334,12 @@ class Geo:
                 m = (b > r + 60) & (b > g + 20) & (b > 90)
             cs = np.concatenate(([0], np.cumsum(m.sum(axis=1))))
             occ[i] = (cs[self.r1] - cs[self.r0]) >= self.need[i]
-        return occ
+            mx = np.maximum(np.maximum(b, g), r)
+            mn = np.minimum(np.minimum(b, g), r)
+            seen = m | ((mx - mn < 26) & (mn > 100)) | (mn > 200)        # 띠 / 회색 천 / 흰 바늘
+            cv = np.concatenate(([0], np.cumsum(seen.sum(axis=1))))
+            vis[i] = (cv[self.r1] - cv[self.r0]) >= 1.5 * self.need[i]
+        return occ, vis
 
     def fabric_ok(self, img):
         """찍은 그림이 아직 천인지 (창이 사라지면 다른 화면이 찍힘)."""
@@ -333,9 +372,9 @@ class Geo:
         ys, xs = np.nonzero(band.min(axis=2) > 215)
         if len(xs) < max(6, 12 * self.s * self.s):
             return None
-        v = (xs.mean() + int(self.L) - self.L - REF_NEEDLE_X * self.s) / (REF_STEP * self.s)
+        v = (xs.mean() + int(self.L) - self.xa - REF_NEEDLE_X * self.xs) / (REF_STEP * self.xs)
         k = int(round(v))
-        if abs(v - k) > 0.3 or not 0 <= k <= 4:
+        if abs(v - k) > 0.45 or not 0 <= k <= 4:
             return None
         return k
 
@@ -415,14 +454,16 @@ class Tracker:
                   틱 번호가 k 일 때 절대 칸 a 는 화면의 a+k 번 줄에 있음.
     """
 
-    def __init__(self, hit):
+    def __init__(self, hit, P=None):
         self.A = hit               # 띠 아래끝이 이 줄에 오면 박음질 시작
         self.D = hit               # 띠 위끝이 이 줄을 지나면 박음질 끝
         self.cells = np.full((NCOL, 2 * OFF), -1, np.int8)
         self.hist = deque(maxlen=4)
         self.events = []           # (틱 번호, 그 전 화면 시각, 그 후 화면 시각)
         self.phi = None            # 0번 틱 시각
-        self.P = 0.5
+        self.P = P or 0.5
+        self.P_known = P is not None   # 지난 판에서 잰 간격 → 첫 틱 하나로 바로 시각을 맞춤
+        self.misfit = 0
         self.k0 = 0                # phi 를 모를 때 쓰는 틱 번호
         self.outliers = 0
         self.integrated = 0
@@ -439,21 +480,21 @@ class Tracker:
         return k, x - k
 
     def ready(self):
-        return self.phi is not None and len(self.events) >= 3
+        return self.phi is not None and (len(self.events) >= 3 or self.P_known)
 
-    def feed(self, t, occ):
+    def feed(self, t, occ, vis=None):
         h = self.hist
-        h.append((t, occ))
+        h.append((t, occ, vis))
         if len(h) == 4:
-            (_, o0), (t1, o1), (t2, o2), (_, o3) = h
+            (_, o0, _), (t1, o1, _), (t2, o2, _), (_, o3, _) = h
             if np.array_equal(o0, o1) and np.array_equal(o2, o3) and not np.array_equal(o1, o2):
                 self._event(t1, t2)
         if len(h) >= 3:
-            (_, oa), (tb, ob), (_, oc) = list(h)[-3:]
+            (_, oa, _), (tb, ob, vb), (_, oc, _) = list(h)[-3:]
             if np.array_equal(oa, ob) and np.array_equal(ob, oc):
                 k, frac = self.count(tb)
                 if frac is None or 0.1 <= frac <= 0.9:
-                    self._integrate(k, ob)
+                    self._integrate(k, ob, vb)
 
     def _event(self, lo, hi):
         mid = (lo + hi) / 2
@@ -461,6 +502,10 @@ class Tracker:
             # 처음 몇 번은 차례대로 세면서, 줄이 내려가는 간격(게임마다 0.4초/0.5초 등)을 먼저 잼
             self.k0 += 1
             self.events.append((self.k0, lo, hi))
+            if self.P_known:
+                if hi - lo < 0.3:
+                    self._fit()                      # 지난 판 간격으로 바로 시각을 맞춤
+                return
             mids = [(e[1] + e[2]) / 2 for e in self.events if e[2] - e[1] < 0.3]
             ds = [b - a for a, b in zip(mids, mids[1:]) if 0.25 <= b - a <= 0.75]
             if len(ds) >= 3:
@@ -471,6 +516,17 @@ class Tracker:
             x = (mid - self.phi) / self.P
             k = int(round(x))
             if abs(x - k) > 0.3:
+                if self.P_known and len(self.events) < 12:
+                    self.misfit += 1
+                    if self.misfit >= 2:
+                        # 지난 판 간격이 이번 판과 다름 → 처음처럼 간격부터 다시 잼 (틱 번호는 이어서 셈)
+                        print("  [알림] 띠가 내려오는 간격이 지난번과 달라서 다시 잼")
+                        self.P_known = False
+                        self.k0 = self.events[-1][0] + 1
+                        self.phi = None
+                        self.events = [(self.k0, lo, hi)]
+                        self.cells[:] = -1
+                        return
                 self.outliers += 1
                 if self.outliers >= 4:               # 시각이 계속 안 맞음 → 처음부터 다시 맞춤
                     self.events = [e for e in self.events[-1:]]
@@ -500,7 +556,7 @@ class Tracker:
             phi = (lo + hi) / 2
         self.phi, self.P = phi, P
 
-    def _integrate(self, k, occ):
+    def _integrate(self, k, occ, vis=None):
         a0 = OFF - k
         if a0 < 0 or a0 + SEE_ROWS > self.cells.shape[1]:
             return
@@ -510,7 +566,10 @@ class Tracker:
             self.still_prev = self.still if consecutive else np.zeros_like(self.still)
             self.k_last = k
         self.still = np.where(occ, self.still_prev + 1, 0)
-        self.cells[:, a0:a0 + SEE_ROWS] = occ & (self.still < 9)
+        new = (occ & (self.still < 9)).astype(np.int8)
+        if vis is not None:                  # 가려져서 안 보이는 칸은 전에 본 대로 둠
+            new = np.where(vis, new, self.cells[:, a0:a0 + SEE_ROWS])
+        self.cells[:, a0:a0 + SEE_ROWS] = new
         self.integrated += 1
 
     def present(self, i, k):
@@ -594,6 +653,25 @@ def focus_game(w, force=False):
     time.sleep(random.uniform(0.1, 0.2))
 
 
+def covering_windows(w):
+    """의장이 창 위에 떠서 겹친 창들의 제목 (화면 맨 위 창부터 의장이 창이 나오기 전까지)."""
+    out = []
+    try:
+        hw = getattr(w, "_hWnd", None)
+        for o in am._gw.getAllWindows():
+            if (hw is not None and getattr(o, "_hWnd", None) == hw) or o is w:
+                break
+            t = str(o.title).strip()
+            if not t or not window_shown(o):
+                continue
+            if o.left < w.left + w.width and w.left < o.left + o.width \
+                    and o.top < w.top + w.height and w.top < o.top + o.height:
+                out.append(t)
+    except Exception:
+        pass
+    return out[:4]
+
+
 _debug_saved = False
 
 
@@ -610,8 +688,10 @@ def wait_until(t):
 # 판이 바뀌어도 기억하는 값 (한 번 맞춘 박음질 줄 / 키 반응 시간은 다음 판에도 씀)
 # 프로그램을 껐다 켜도 이어 쓰도록 sew_learn.json 에 저장함
 LEARN_FILE = os.path.join(HERE, "sew_learn.json")
-_learned = {"dA": 0, "dD": 0, "lat": [], "rb": None}
-_dumped = [False]
+_learned = {"dA": 0, "dD": 0, "lat": [], "rb": None, "P": None, "geo": None}
+_dumped = [0]
+_win_seen = [None]          # 시작을 누른 뒤 의장이 창이 처음 보인 시각
+_last_pt = [None]           # 지난 판에 마우스를 둔 자리 (다음 판 시작 누르자마자 그리로)
 
 
 def load_learned():
@@ -625,7 +705,12 @@ def load_learned():
         _learned["dD"] = int(d.get("dD2", 0))
         if d.get("rb"):
             _learned["rb"] = float(d["rb"])
-        print(f"지난번에 맞춘 값: 키 반응 {d.get('lat') or 0:.2f}초 · 시작 줄 {_learned['dA']:+d} · 끝 줄 {_learned['dD']:+d}")
+        if d.get("P") and 0.25 <= float(d["P"]) <= 0.75:
+            _learned["P"] = float(d["P"])
+        if d.get("geo"):
+            _learned["geo"] = d["geo"]
+        print(f"지난번에 맞춘 값: 키 반응 {d.get('lat') or 0:.2f}초 · 시작 줄 {_learned['dA']:+d} · 끝 줄 {_learned['dD']:+d}"
+              + (f" · 띠 간격 {_learned['P']:.3f}초" if _learned["P"] else ""))
     except Exception:
         pass
 
@@ -635,7 +720,8 @@ def save_learned():
         import json
         lat = float(np.median(_learned["lat"])) if _learned["lat"] else None
         with open(LEARN_FILE, "w", encoding="utf-8") as f:
-            json.dump({"lat": lat, "dA2": _learned["dA"], "dD2": _learned["dD"], "rb": _learned["rb"]}, f)
+            json.dump({"lat": lat, "dA2": _learned["dA"], "dD2": _learned["dD"], "rb": _learned["rb"],
+                       "P": _learned["P"], "geo": _learned["geo"]}, f)
     except Exception:
         pass
 
@@ -678,10 +764,24 @@ class Sewing:
         self.noresp = 0
         self.iter_dt = 0.02                   # 한 바퀴(화면 읽기+계산) 걸리는 시간
         self.dts = []
-        self.dump = DUMP_FRAMES and not _dumped[0]
+        self.dump = _dumped[0] < DUMP_GAMES
         self.dump_k = None
         self.dump_log = []
+        self.dump_jpgs = []                   # (파일 이름, jpg) — 판이 끝나면 한꺼번에 저장 (게임 중엔 안 느려지게)
         self.t0 = time.time()
+        seen = _win_seen[0]
+        self.t_win = seen if seen is not None and 0 <= self.t0 - seen < 5 else self.t0   # 의장이 창이 뜬 시각
+        _win_seen[0] = None
+        self.t_ready = self.t_strip = self.t_press = None
+        self.st_k = None
+        self.st_tot = [0] * 5                 # 칸별: 바늘 줄에 띠가 있던 틱 수
+        self.st_got = [0] * 5                 #       그중 박은 틱 수
+        self.lane_miss = None                 # 바늘을 화면에서 못 찾기 시작한 시각
+        self.lane_guess = 0                   # 바늘이 안 보여서 마우스 둔 칸으로 본 횟수
+        self.cal_t = 0.0
+        self.cal_obs = {}                     # 띠 자리별로 화면에서 본 띠 가운데 x
+        self.cal_msg = False
+        self.path = []
 
     @property
     def comp(self):
@@ -695,14 +795,23 @@ class Sewing:
         w = self.w
         t0 = time.time()
         geo = img = None
+        raised = False
+        cache = _learned.get("geo") or {}
         while time.time() - t0 < 5 and running and alive:
             if not window_shown(w):
                 return False
             img = shot(self.sct, w.left, w.top, w.width, w.height)
             geo = detect_geo(img)
+            if geo is None and list(cache.get("size") or []) == [w.width, w.height]:
+                g2 = Geo(tuple(cache["box"]), cache.get("line"))
+                if g2.fabric_ok(img):
+                    geo = g2                          # 지난 판과 같은 크기 창 → 그때 찾은 천 위치
             if geo is not None:
                 break
-            time.sleep(0.15)
+            if not raised and time.time() - t0 > 0.6:
+                raised = True                         # 다른 창에 가려졌을 수 있음 → 의장이 창을 맨 앞으로
+                focus_game(w, force=True)
+            time.sleep(0.05)
         if geo is None:
             if not (running and alive):
                 return False
@@ -717,15 +826,30 @@ class Sewing:
         print(f"  천 {geo.R - geo.L:.0f}x{geo.B - geo.T:.0f} (배율 {geo.s:.2f}) · 박음질 줄 {hit}"
               + ("" if geo.line_found else " (빨간 실선 못 찾음 — 기본값)")
               + (f" · 키 반응 {self.comp:.2f}초 (지난 판에서 잰 값)" if len(self.lat) >= 2 else ""))
+        vis = geo.lanes_visible(img)
+        if not all(vis):
+            hidden = ", ".join(f"{k + 1}번" for k, v in enumerate(vis) if not v)
+            cover = covering_windows(w)
+            print(f"  [주의] 천 {hidden} 칸이 가려져 보임" + (f" (위에 있는 창: {', '.join(cover)})" if cover else "")
+                  + " → 의장이 창을 맨 앞으로")
+            focus_game(w, force=True)
+            img = shot(self.sct, w.left, w.top, w.width, w.height)
+            vis = geo.lanes_visible(img)
+            if not all(vis):
+                print("  [주의] 그래도 가려짐 — 의장이 창을 가리는 창을 옆으로 옮겨 주세요 (그 칸은 띠가 안 보임)")
         if SAVE_DEBUG_SHOT and not _debug_saved and img is not None:
             save_debug(img, geo, os.path.join(HERE, "sew_debug.png"))
             _debug_saved = True
+        if self.dump:
+            self.dump_setup(img)
+        _learned["geo"] = {"size": [w.width, w.height], "box": [float(v) for v in geo.box],
+                           "line": float(geo.line) if geo.line_found else None}
         cx0, cy0, cx1, cy1 = geo.crop
         cx1, cy1 = min(cx1, w.width), min(cy1, w.height)
         self.g = geo.moved(cx0, cy0)
         self.ox, self.oy = cx0, cy0                 # 창 왼쪽 위 → 잘라 찍는 곳
         self.cw, self.ch = cx1 - cx0, cy1 - cy0
-        self.trk = Tracker(hit)
+        self.trk = Tracker(hit, _learned["P"])
         self.hit0 = hit
         self.trk.A += _learned["dA"]
         self.trk.D += _learned["dD"]
@@ -733,7 +857,8 @@ class Sewing:
         self.target = self.lane if self.lane is not None else 2
         focus_game(w)
         x, y = self.mouse_xy(self.target)
-        am.smooth_move_to(x, y, random.uniform(0.25, 0.4), bow=8)
+        am.smooth_move_to(x, y, random.uniform(0.1, 0.18), bow=4)
+        _last_pt[0] = (int(x), int(y))
         return True
 
     def grab(self):
@@ -752,10 +877,21 @@ class Sewing:
         tf = (ta + time.time()) / 2
         if not self.g.fabric_ok(img):
             return False
-        self.trk.feed(tf, self.g.occupancy(img))
+        occ, vis = self.g.occupancy(img)
+        self.trk.feed(tf, occ, vis)
         nl = self.g.needle_lane(img)
         if nl is not None:
             self.lane = nl
+            self.lane_miss = None
+        elif self.lane_miss is None:
+            self.lane_miss = tf
+        elif (tf - self.lane_miss >= 0.25 and not self.mover.busy() and 0 <= self.target <= 4
+              and self.lane != self.target):
+            self.lane = self.target            # 바늘이 화면에서 안 보이면 마우스를 둔 칸에 있다고 봄
+            self.lane_guess += 1
+        if tf - self.cal_t >= 0.3:
+            self.cal_t = tf
+            self.calibrate(img)
         self.sc = self.g.read_score(img)
         self.tf_prev, self.tf = self.tf, tf
         btn = self.g.buttons(img)
@@ -773,44 +909,138 @@ class Sewing:
             self.dump_frame(img, tf)
         return True
 
-    def dump_frame(self, img, tf):
-        """분석용: 틱마다 한 장(구간 가운데)씩, 그리고 키를 누르고 뗀 직후 화면을 저장."""
-        if tf - self.t0 > 35:
+    def calibrate(self, img):
+        """화면에 보이는 띠의 실제 가로 위치로 띠 자리를 맞춤 (창 크기/배율이 달라도 5번째 칸까지 정확히)."""
+        g = self.g
+        sub = img[g.ya:g.yb]
+        if sub.size == 0:
             return
-        trk = self.trk
-        if trk.phi is None:
+        b, gg, r = sub[..., 0], sub[..., 1], sub[..., 2]
+        masks = ((r > 140) & (gg > b + 60) & (r >= gg - 10) & (b < 130),
+                 (b > r + 60) & (b > gg + 20) & (b > 90))
+        lim = 0.3 * REF_STEP * g.xs
+        for c, m in enumerate(masks):
+            col = m.sum(axis=0)
+            on = col >= max(4, 0.8 * g.rh)
+            n, x = len(on), 0
+            while x < n:
+                if not on[x]:
+                    x += 1
+                    continue
+                x0 = x
+                while x < n and on[x]:
+                    x += 1
+                if not 3 * g.s <= x - x0 <= 18 * g.s:
+                    continue
+                cxm = float((np.arange(x0, x) * col[x0:x]).sum() / col[x0:x].sum())
+                d, k = min((abs(g.col_x(2 * k + c) - cxm), k) for k in range(5))
+                if d <= lim:
+                    self.cal_obs.setdefault(2 * k + c, deque(maxlen=8)).append(cxm)
+        cols = {i: float(np.median(v)) for i, v in self.cal_obs.items() if len(v) >= 2}
+        if len(cols) < 2:
             return
-        k, frac = trk.count(tf)
-        if not (0.4 < frac < 0.6 and k != self.dump_k):
+        ref = {i: (REF_YCOL0, REF_BCOL0)[i % 2] + REF_STEP * (i // 2) for i in range(NCOL)}
+        xr = np.array([ref[i] for i in cols])
+        if xr.max() - xr.min() < REF_STEP:
             return
-        self.dump_k = k
+        xs, xa = np.polyfit(xr, np.array([cols[i] for i in cols]), 1)
+        if not 0.92 * g.s <= xs <= 1.08 * g.s:
+            return
+        moves = [(xa + ref[i] * xs) - g.col_x(i) for i in range(NCOL)]
+        if max(abs(v) for v in moves) < 1.5:
+            return
+        g.set_x(float(xa), float(xs))
+        if not self.cal_msg:
+            self.cal_msg = True
+            print(f"  [보정] 띠 자리를 화면에 보이는 띠에 맞춤 (5번째 칸 {moves[-1]:+.0f}px)")
+
+    def lane_stats(self):
+        """칸별로 '바늘 줄에 띠가 있던 틱' 과 '그때 실제로 박은 틱' 을 셈 (판 끝에 cmd 에 표시)."""
+        k, Tv, _ = self.vis_times(self.tf)
+        frac = (self.tf - Tv) / self.trk.P
+        if k == self.st_k or not 0.35 <= frac <= 0.8:
+            return
+        self.st_k = k
+        for i in range(NCOL):
+            if self.trk.present(i, k):
+                ln = i // 2
+                self.st_tot[ln] += 1
+                if self.t_strip is None:
+                    self.t_strip = self.tf
+                if self.lane == ln and self.btn[i % 2]:
+                    self.st_got[ln] += 1
+
+    # ---------- 분석용 기록 (DUMP_GAMES) ----------
+    def dump_setup(self, img):
         try:
+            import io
             from PIL import Image
-            d = os.path.join(HERE, "sew_frames")
-            os.makedirs(d, exist_ok=True)
-            y1 = int(self.g.line + 20 * self.g.s)
-            Image.fromarray(img[:y1, :, ::-1].clip(0, 255).astype(np.uint8)).save(
-                os.path.join(d, f"{tf - self.t0:07.3f}.png"))
-            self.dump_log.append(f"frame {tf - self.t0:.3f} k={k} frac={frac:.2f} lane={self.lane} "
-                                 f"score={self.sc} btn={self.btn}")
-        except Exception:
+            self.dump_jpgs.append(("창.png", Image.fromarray(img[:, :, ::-1].clip(0, 255).astype(np.uint8))))
+            w = self.w
+            mons = list(getattr(self.sct, "monitors", [])[1:])
+            mon = next((m for m in mons if m["left"] <= w.left + w.width / 2 < m["left"] + m["width"]
+                        and m["top"] <= w.top + w.height / 2 < m["top"] + m["height"]), None)
+            if mon is not None:
+                full = shot(self.sct, mon["left"], mon["top"], mon["width"], mon["height"])
+                im = Image.fromarray(full[:, :, ::-1].clip(0, 255).astype(np.uint8))
+                im = im.resize((im.width // 2, im.height // 2))
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG", quality=80)
+                self.dump_jpgs.append(("화면전체.jpg", buf.getvalue()))
+        except Exception as e:
+            print(f"  (분석용 첫 화면 저장 실패: {e})")
+
+    def dump_frame(self, img, tf):
+        """분석용: 화면을 읽을 때마다 한 줄 기록 + 틱마다 화면 한 장 (판이 끝나면 한꺼번에 저장)."""
+        try:
+            trk = self.trk
+            k, frac = trk.count(tf)
+            held = "".join("Y" if kk == LEFT_KEY else "B" for kk in self.keys.held()) or "-"
+            btn = "".join("?" if v is None else ("1" if v else "0") for v in self.btn)
+            fr = "" if frac is None else f"{frac:.2f}"
+            self.dump_log.append(f"{tf - self.t0:7.3f} k={k} fr={fr} lane={self.lane} tgt={self.target}"
+                                 f" mv={int(self.mover.busy())} keys={held} btn={btn} sc={self.sc}")
+            if frac is None or not (0.4 < frac < 0.6) or k == self.dump_k or len(self.dump_jpgs) > 400:
+                return
+            self.dump_k = k
+            import io
+            from PIL import Image
+            y1 = min(img.shape[0], int(self.g.line + 25 * self.g.s))
+            buf = io.BytesIO()
+            Image.fromarray(img[:y1, :, ::-1].clip(0, 255).astype(np.uint8)).save(buf, format="JPEG", quality=88)
+            self.dump_jpgs.append((f"{tf - self.t0:07.3f}.jpg", buf.getvalue()))
+            occ = self.g.occupancy(img)[0]
+            mem = "|".join("".join("#" if trk.cells[i, r - k + OFF] == 1 else "." for r in range(12, 25))
+                           for i in range(NCOL))
+            self.dump_log.append(f"  TICK k={k} 화면줄0~17=" + "|".join("".join("#" if v else "." for v in occ[i])
+                                                                    for i in range(NCOL))
+                                 + f"  기억줄12~24={mem}  계획={self.path[:6]}  A={trk.A} D={trk.D} P={trk.P:.4f}")
+        except Exception as e:
+            print(f"  (분석용 기록 중지: {e})")
             self.dump = False
 
     def write_dump(self):
         try:
-            d = os.path.join(HERE, "sew_frames")
+            _dumped[0] += 1
+            d = os.path.join(HERE, "sew_frames", f"판{_dumped[0]}_{time.strftime('%H%M%S')}")
             os.makedirs(d, exist_ok=True)
             trk, g = self.trk, self.g
             lines = [f"phi={trk.phi - self.t0 if trk.phi else None} P={trk.P} A={trk.A} D={trk.D} "
-                     f"box={g.box} clip={g.clip} rh={g.rh} line={g.line} comp={self.comp:.3f}"]
+                     f"box={g.box} clip={g.clip} rh={g.rh} line={g.line} comp={self.comp:.3f} "
+                     f"xa={g.xa:.2f} xs={g.xs:.4f} 창뜬시각={self.t_win - self.t0:.3f}"]
             lines += [f"key {t - self.t0:.3f} {k} {'down' if on else 'up'}" for (t, k, on) in self.keys.log]
             lines += self.dump_log
             with open(os.path.join(d, "log.txt"), "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
-            _dumped[0] = True
-            print(f"  (분석용 화면 {len(self.dump_log)}장을 sew_frames 폴더에 저장함)")
+            for name, data in self.dump_jpgs:
+                if isinstance(data, bytes):
+                    with open(os.path.join(d, name), "wb") as f:
+                        f.write(data)
+                else:
+                    data.save(os.path.join(d, name))
+            print(f"  (분석용 기록을 {d} 에 저장함 — 이 폴더를 압축해서 보내주세요)")
         except Exception as e:
-            print(f"  (분석용 화면 저장 실패: {e})")
+            print(f"  (분석용 기록 저장 실패: {e})")
 
     def measure_latency(self, tf, btn):
         """키를 보낸 뒤 버튼 색이 바뀌어 보일 때까지 걸린 시간 = 키 → 화면 반응 시간."""
@@ -924,6 +1154,7 @@ class Sewing:
         cur = self.lane if self.lane is not None else self.target
         gain = self.trk.gains(k, 22)
         path = plan_lanes(gain, cur, max(0.0, (T_next - now) / self.trk.P))
+        self.path = path
         k0, k1 = path[0], path[1]
         if k0 != cur:
             tgt = k0
@@ -1057,6 +1288,9 @@ class Sewing:
                     self.mover.step(now)
                     time.sleep(LOOP_DT)
                     continue
+                if self.t_ready is None:
+                    self.t_ready = now
+                self.lane_stats()
                 kv = self.vis_times(self.tf)[0]
                 if kv != last_vk:
                     last_vk = kv
@@ -1066,6 +1300,8 @@ class Sewing:
                 self.check_end(now)
                 gain = self.plan(k, T_next, now)
                 nxt = self.apply_keys(now)
+                if self.t_press is None and self.keys.presses:
+                    self.t_press = now
                 self.check_penalty(now)
                 if DEBUG and now - self.last_dbg > 0.5:
                     self.last_dbg = now
@@ -1091,6 +1327,8 @@ class Sewing:
             self.write_dump()
         if len(self.lat) >= 2:
             _learned["lat"] = self.lat[-12:]
+        if self.trk.phi is not None and len(self.trk.events) >= 20:
+            _learned["P"] = float(self.trk.P)     # 다음 판은 첫 틱부터 바로 (간격을 다시 안 재도 됨)
         if self.res["score"] > 50:
             _learned["dA"] = self.trk.A - self.hit0
             _learned["dD"] = self.trk.D - self.hit0
@@ -1099,7 +1337,12 @@ class Sewing:
         dts = np.array(self.dts[5:] or [0.0])
         print(f"  (키 반응 {self.comp:.2f}초 · 화면 한 바퀴 평균 {dts.mean() * 1000:.0f}ms"
               f" 최대 {dts.max() * 1000:.0f}ms · 시작 줄 {self.trk.A} · 끝 줄 {self.trk.D}"
-              f" · 누름 지연 {self.pa:.2f} · 뗌 여유 {self.rb:.2f})")
+              f" · 누름 지연 {self.pa:.2f} · 뗌 여유 {self.rb:.2f} · 띠 간격 {self.trk.P:.3f}초)")
+        rel = lambda t: f"{t - self.t_win:.1f}초" if t is not None else "-"
+        print(f"  (창 뜬 뒤: 준비 {rel(self.t_ready)} · 첫 띠가 바늘 줄에 {rel(self.t_strip)} · 첫 누름 {rel(self.t_press)})")
+        print("  (칸별로 바늘 줄에 띠가 있던 틱 중 박은 틱: "
+              + " · ".join(f"{k + 1}칸 {self.st_got[k]}/{self.st_tot[k]}" for k in range(5))
+              + (f" · 바늘이 안 보여 마우스 칸으로 판단 {self.lane_guess}번" if self.lane_guess else "") + ")")
         self.res.update(secs=time.time() - t_start, presses=self.keys.presses,
                         ok=self.res["score"] >= 235)
         return self.res
@@ -1118,12 +1361,16 @@ def start_game(sct):
     am.human_click(am.START_BTN)
     print("  시작 버튼 클릭!")
     t0 = time.time()
+    if _last_pt[0] is not None:
+        # 창이 뜨는 동안 지난 판에 바늘을 두던 자리로 바로 옮겨 둠 (창은 매번 같은 자리에 뜸)
+        x, y = _last_pt[0]
+        am.smooth_move_to(x + random.randint(-8, 8), y + random.randint(-5, 5), random.uniform(0.12, 0.2), bow=5)
     while time.time() - t0 < 6:
         w = find_game_win(ignore=stale)
         if w is not None:
-            time.sleep(random.uniform(0.2, 0.4))
+            _win_seen[0] = time.time()
             return w
-        time.sleep(0.1)
+        time.sleep(0.03)
     print("  [실패] 시작 후 6초 동안 '의장이' 창이 안 뜸")
     return None
 
