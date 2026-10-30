@@ -1138,6 +1138,8 @@ def sell_all(sct):
         return True
     print(f"[팔기] 팔 것 {n_sell}개")
     names = all_names()
+    # 바닥 재료 무더기 자리 — 리어카맨이 나오기 전에 한 번 보고(가려지지 않게), 나온 뒤 한 번 더 봐서 합침
+    avoid = pile_boxes(sct)
     cart = summon_cart(sct)
     if cart is None:
         return False
@@ -1157,7 +1159,7 @@ def sell_all(sct):
     tol = max(5, int(0.12 * dy))              # 커서가 몸통에서 이만큼 안이면 누름
     clicks = []                               # 이번 리어카맨을 누른 자리 (안 움직이는지 보려고)
     opened = False
-    avoid = pile_boxes(sct)                   # 바닥 재료 위에서는 누르지 않음 (주워버리니까)
+    avoid += pile_boxes(sct)                  # 바닥 재료 위에서는 누르지 않음 (주워버리니까)
     for attempt in range(5):
         for sx, sy in spots:
             res = chase_click(sct, cart, body, (sx, sy), tol=tol, avoid=avoid, alts=alts)
