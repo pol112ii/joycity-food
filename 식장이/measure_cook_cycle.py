@@ -9,13 +9,16 @@
   2. 아이템 창 칸 (첫 칸 / 첫 줄 맨 오른쪽 / 5번째 줄 첫 칸)
   3. 바닥 재료 무더기 그림 (레시피 재료마다)
   4. 완성품을 버릴 바닥 빈 자리 (재료 무더기와 떨어진 곳)
+  5. 아이템 창의 완성품 20개 꽉 찬 칸 (왼쪽 위 숫자 20 그림 — 20개 칸만 버릴 때)
 
 ■ 준비: 게임 화면에 제작 창을 띄우고, 바닥에 재료 무더기를 하나씩 떨어뜨려 두기
+         인벤토리에 완성품 20개 꽉 찬 칸이 하나 있어야 함 (5번)
 ■ 실행:  py measure_cook_cycle.py      F1 = 기록 / F2 = 방금 것 다시 / ESC = 그만두기
   ring_layout.json 이 이미 있으면 바뀐 부분 번호만 골라서 다시 잴 수 있음
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -29,24 +32,37 @@ import pyautogui
 from PIL import Image
 
 
+def setting(fn, name):
+    """파일에 적힌 설정값 하나 (파일을 실행하지 않고 그 줄만 읽음). 없으면 None."""
+    import ast
+    try:
+        with open(os.path.join(HERE, fn), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+    except Exception:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == name for t in node.targets):
+            try:
+                return ast.literal_eval(node.value)
+            except Exception:
+                return None
+    return None
+
+
+def full_names():
+    """20개 칸 그림을 잴 완성품 이름 (cook_cycle.py 의 DROP, 끝 숫자 뺌). FULL_ONLY = False 면 없음."""
+    if setting("cook_cycle.py", "FULL_ONLY") is False:
+        return []
+    out = []
+    for n in setting("cook_cycle.py", "DROP") or ():
+        b = re.sub(r"[_\-]?\d+$", "", str(n)) or str(n)
+        if b not in out:
+            out.append(b)
+    return out
+
+
 def recipe_names():
     """cook_cycle.py 의 PILES → RECIPE → auto_cook.py 의 RECIPE 순서로 재료 이름 (파일을 실행하지 않고 읽음)."""
-    import ast
-
-    def setting(fn, name):
-        try:
-            with open(os.path.join(HERE, fn), encoding="utf-8") as f:
-                tree = ast.parse(f.read())
-        except Exception:
-            return None
-        for node in tree.body:
-            if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == name for t in node.targets):
-                try:
-                    return ast.literal_eval(node.value)
-                except Exception:
-                    return None
-        return None
-
     piles = setting("cook_cycle.py", "PILES")
     if piles is not None:
         return list(piles)
@@ -58,7 +74,7 @@ def recipe_names():
     return names
 
 
-def build_steps(names):
+def build_steps(names, fulls):
     steps = [
         ("say", "say", "게임 화면과 제작 창이 보이게 해두세요. 준비됐으면 F1"),
         ("item_icon", "main", "아래 메뉴 맨 왼쪽 [아이템] 아이콘 (상자 모양) 가운데"),
@@ -77,7 +93,53 @@ def build_steps(names):
         ("바닥 재료 무더기 그림 (" + "/".join(names) + ")", [0] + list(range(first_spr, drop)), []),
         ("완성품 버릴 자리", [0, drop], []),
     ]
+    if fulls:
+        first_full = len(steps)
+        steps.append(("say", "say", "아이템 창에 " + "/".join(fulls) + " 20개 꽉 찬 칸이 보이게 해두세요. 됐으면 F1"))
+        steps += [("full_" + n, "full", f"아이템 창의 {n} 20개 칸 (왼쪽 위 숫자가 20) 가운데") for n in fulls]
+        groups.append(("완성품 20개 칸 숫자 그림 (" + "/".join(fulls) + ")", list(range(first_full, len(steps))), []))
     return steps, groups
+
+
+ALIGN = 7                    # 위치 맞춤 여유 (cook_cycle.py 의 FULL_ALIGN 과 같은 값)
+
+
+def grab_full(data, x, y):
+    """(x, y) 가 가리키는 아이템 창 칸을 칸 가운데에 맞춰 저장할 그림으로. 실패면 None.
+
+    마우스가 칸 위에 있으면 커서/설명 창이 그림을 가려서, 마우스를 창 밖으로 치운 뒤에 찍음.
+    """
+    p = data["points"]
+    if not all(k in p for k in ("item_first", "item_row1_last", "item_row5_first")) or "item" not in data["titles"]:
+        print("   [다시] 아이템 창 칸(2번)을 먼저 재야 해요")
+        return None
+    w = mr.top_window_at(x, y)
+    if w is None or mr.norm(w.title) != mr.norm(data["titles"]["item"]):
+        print("   [다시] 아이템 창 칸 위가 아니에요")
+        return None
+    a = (w.left + p["item_first"]["fx"] * w.width, w.top + p["item_first"]["fy"] * w.height)
+    b = (w.left + p["item_row1_last"]["fx"] * w.width, w.top + p["item_row1_last"]["fy"] * w.height)
+    c = (w.left + p["item_row5_first"]["fx"] * w.width, w.top + p["item_row5_first"]["fy"] * w.height)
+    px, py = (b[0] - a[0]) / 5, (c[1] - a[1]) / 4
+    col = min(5, max(0, int(round((x - a[0]) / px))))
+    row = min(4, max(0, int(round((y - a[1]) / py))))
+    cx, cy = int(round(a[0] + col * px)), int(round(a[1] + row * py))
+    print("   마우스를 아이템 창 밖으로 치우세요 (치우면 바로 찍음)")
+    t0 = time.time()
+    while time.time() - t0 < 15:
+        mx, my = pyautogui.position()
+        if not (w.left <= mx < w.left + w.width and w.top <= my < w.top + w.height):
+            break
+        time.sleep(0.1)
+    else:
+        print("   [다시] 마우스가 계속 아이템 창 안에 있어요")
+        return None
+    time.sleep(0.8)                          # 설명 창이 사라질 때까지
+    half = int(round(min(abs(px), abs(py)) * 0.40)) + ALIGN    # 칸 안쪽(칸 간격의 80%) + 여유
+    with mss.mss() as sct:
+        shot = sct.grab({"left": cx - half, "top": cy - half, "width": half * 2, "height": half * 2})
+    img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+    return img, (cx, cy), (row, col)
 
 
 def choose(steps, groups):
@@ -111,6 +173,8 @@ def main():
     print("=" * 64)
     print(" 식장이 사이클 준비 (F1 = 기록, F2 = 방금 것 다시, ESC = 그만)")
     print(" 바닥 무더기 그림을 잴 재료:", ", ".join(names))
+    if full_names():
+        print(" 20개 칸 숫자 그림을 잴 완성품:", ", ".join(full_names()), " (인벤토리에 20개 꽉 찬 칸이 있어야 함)")
     print("=" * 64)
     cw = mr.craft_window()
     if cw is None:
@@ -126,7 +190,7 @@ def main():
         dpi = int(ctypes.windll.user32.GetDpiForSystem())
     except Exception:
         dpi = None
-    all_steps, groups = build_steps(names)
+    all_steps, groups = build_steps(names, full_names())
     steps, old = choose(all_steps, groups)
     if old is not None:
         data = old
@@ -179,6 +243,17 @@ def main():
             print(f"   저장: ring_sprites/{fn}  ({x1 - x0}x{y1 - y0})")
             i += 1
             continue
+        if kind == "full":
+            got = grab_full(data, x, y)
+            if got is None:
+                continue
+            img, (cx, cy), (row, col) = got
+            fn = name + ".png"
+            img.save(os.path.join(mr.SPRITE_DIR, fn))
+            data["sprites"][name] = {"file": fn, "w": img.size[0], "h": img.size[1], "cx": cx, "cy": cy}
+            print(f"   저장: ring_sprites/{fn}  (아이템 창 {row + 1}줄 {col + 1}칸)")
+            i += 1
+            continue
         if kind == "main":
             if not (mw.left <= x < mw.left + mw.width and mw.top <= y < mw.top + mw.height):
                 print("   [다시] 게임 창 밖이에요")
@@ -215,6 +290,8 @@ def main():
         print(f"   아이템 칸 간격: 가로 {(p['item_row1_last']['dx'] - p['item_first']['dx']) / 5:.1f}"
               f" / 세로 {(p['item_row5_first']['dy'] - p['item_first']['dy']) / 4:.1f}  (둘이 거의 같아야 정상)")
     print(f"   그림: {', '.join(v['file'] for v in data['sprites'].values())}")
+    if full_names():
+        print("   20개 칸 숫자 그림이 맞게 찍혔는지:  py cook_cycle.py 숫자  (버리지 않고 칸마다 확인만)")
     data["saved_at"] = time.strftime("%Y-%m-%d %H:%M")
     tmp = mr.OUT + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

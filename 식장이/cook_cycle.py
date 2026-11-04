@@ -3,7 +3,7 @@
 식장이 자동 반복 — 아까비깡 먹기 → 완성품 바닥에 버리기 → 재료 줍기 → 요리(재료 떨어질 때까지) → 반복
 
   ① 아이템 창에서 아까비깡을 전부 먹기          (마결자동 ring_cycle.py 와 똑같이)
-  ② 아이템 창의 완성품을 바닥(버릴 자리)으로 끌어다 놓기
+  ② 아이템 창의 완성품 중 20개 꽉 찬 칸만 바닥(버릴 자리)으로 끌어다 놓기
   ③ 방 바닥에서 재료 무더기 줍기               (마결자동과 똑같이)
   ④ 요리 — auto_cook.py 의 재료 넣기/요리를 그대로 써서 재료가 떨어질 때까지
   ⑤ ①로
@@ -14,12 +14,14 @@ auto_cook.py / ring_cycle.py / auto_match.py 는 고치지 않고 그대로 불�
   1. 식장이 봇(auto_cook.py)이 이 폴더에서 잘 돌아가는 상태 (cook_layout.json, items, RECIPE)
   2. items 폴더에 완성품 / 아까비깡 그림 등록 (py auto_cook.py 캡처 → 이름 바꾸기)
   3. 아래 DROP 에 버릴 완성품 이름 적기
-  4. py measure_cook_cycle.py  → 아이템 창 / 바닥 재료 무더기 / 버릴 자리 재기
+  4. py measure_cook_cycle.py  → 아이템 창 / 바닥 재료 무더기 / 버릴 자리 / 20개 칸 숫자 그림 재기
   5. py cook_cycle.py 점검     → 빠진 게 있으면 전부 한 번에 알려줌 (아무것도 안 누름)
+  6. py cook_cycle.py 숫자     → 아이템 창의 완성품 칸마다 '20개로 보는지' 확인만 (버리지 않음)
 ■ 실행:  py cook_cycle.py     F8 = 시작/정지,  F9 = 종료
 """
 
 import os
+import re
 import sys
 import time
 import random
@@ -35,6 +37,8 @@ import ring_cycle as rc         # 아이템 창 / 줍기 / 먹기 (마결자동 
 import mss
 import keyboard
 import pyautogui
+import numpy as np
+from PIL import Image
 
 # ==================== 설정 (여기만 고치면 됨) ====================
 # 이름은 items 폴더의 그림 이름과 글자 하나까지 똑같이
@@ -42,7 +46,11 @@ RECIPE = None                       # ← 요리 1번에 넣는 재료와 개수
                                     #   직접 적으려면 예)  RECIPE = [("밀가루", 1), ("우유", 1), ("설탕", 1)]
 PILES = None                        # ← 한 바퀴에 바닥에서 주울 무더기 수. None = 레시피 개수만큼 (재료 1개면 1무더기)
                                     #   바닥에서 안 줍고 인벤토리에 있는 것만 쓰려면 PILES = {}
-DROP = ("완성품",)                  # ← 바닥에 버릴 완성품 (items 그림 이름). 여러 개면 ("빵", "케이크")
+DROP = ("전설의밥3",)               # ← 바닥에 버릴 완성품 (items 그림 이름). 여러 개면 ("빵", "케이크")
+                                    #   이름 끝 숫자는 무시됨 (items 그림과 같은 규칙) → '전설의밥3' = '전설의밥'
+FULL_ONLY = True                    # True = 왼쪽 위 숫자가 20 인 칸(꽉 찬 칸)만 버림. False = 완성품 칸 전부 버림
+FULL_DIFF = 6                       # 숫자 부분이 20개 칸 그림과 이만큼(점) 이하로 다르면 '20개'로 봄
+                                    #   (py cook_cycle.py 숫자  로 칸마다 차이를 보고 조절)
 FOOD = "아까비깡"                   # 버리기 전에 아이템 창에서 전부 먹을 것. 안 먹으려면 FOOD = ""
 MAX_ROUNDS = 20                     # 한 바퀴에 요리 최대 횟수 (재료가 먼저 떨어지면 거기서 끝)
 DROP_SPREAD = (30, 15)              # 버릴 자리에서 이만큼(px) 안쪽으로 매번 조금씩 다르게 놓음 (좌우, 위아래)
@@ -108,10 +116,19 @@ class _Link:
 
 _recipe = []
 _piles = {}
+_drop = ()           # 버릴 완성품 이름 (끝 숫자 뺀 것 — items 그림 이름 규칙)
+_full = {}           # 이름 → 20개 칸 그림 (measure_cook_cycle.py 5번)
+
+
+def _base(n):
+    """items 그림 이름 규칙과 같게 끝 숫자를 뺌 (전설의밥3 → 전설의밥)."""
+    n = str(n)
+    return re.sub(r"[_\-]?\d+$", "", n) or n
 
 
 def apply_settings():
-    global _recipe, _piles
+    global _recipe, _piles, _drop
+    _drop = tuple(dict.fromkeys(_base(n) for n in DROP))
     _recipe = [(str(n), int(c)) for n, c in (RECIPE if RECIPE is not None else ac.RECIPE)]
     if PILES is not None:
         _piles = dict(PILES)
@@ -123,7 +140,7 @@ def apply_settings():
     ac.LOOP = True
     rc.RECIPE = list(_recipe)
     rc.PILES = dict(_piles)
-    rc.SELL = tuple(DROP)               # (그림 확인용 — 리어카에 팔지는 않음)
+    rc.SELL = _drop                     # (그림 확인용 — 리어카에 팔지는 않음)
     rc.FOOD = FOOD or "아까비깡"
     rc.MAX_ROUNDS = MAX_ROUNDS
     rc.REST = False
@@ -177,6 +194,14 @@ def precheck():
             bad.append(what)
 
     print("\n[준비 점검]")
+    need_fn = ("load_layout", "craft_open", "reopen_window", "fill_slots", "cook_one_round", "checkup",
+               "filled_slot_list", "human_drag", "load_templates", "release_keys", "_scan_with_retries")
+    old = [f for f in need_fn if not hasattr(ac, f)]
+    item(not old, "auto_cook.py 버전",
+         f"옛날 auto_cook.py 예요 (없는 것: {', '.join(old)}) — 새 auto_cook.py 로 바꾸고 레시피/텔레그램 다시 적기")
+    if old:
+        print("  → ✗ 표시를 고치고 다시 실행하세요")
+        return False
     lay = ac.load_layout()
     load_am_layout()
     item(lay is not None, "cook_layout.json (식장이 창 위치)", "py measure_cook.py")
@@ -187,11 +212,11 @@ def precheck():
     item(len(plan) <= ac.NUM_SLOTS, f"레시피 재료 수 {len(plan)} ≤ 재료 칸 {ac.NUM_SLOTS}",
          "auto_cook.py 의 NUM_SLOTS 확인")
     tpl = ac.load_templates()
-    need = [n for n, _ in _recipe] + list(DROP)
+    need = [n for n, _ in _recipe] + list(_drop)
     miss = [n for n in need if n not in tpl]
     item(not miss, "items 폴더 그림: " + ", ".join(need),
          f"없는 것: {', '.join(miss)} — 제작 창을 띄우고  py auto_cook.py 캡처  → 이름 바꾸기"
-         + (" (DROP 에 버릴 완성품 이름을 적었는지도 확인)" if any(n in DROP for n in miss) else ""))
+         + (" (DROP 에 버릴 완성품 이름을 적었는지도 확인)" if any(n in _drop for n in miss) else ""))
     if FOOD and FOOD in tpl:
         item(True, f"items 폴더 그림: {FOOD}")
     elif FOOD:
@@ -215,6 +240,12 @@ def precheck():
                    or not os.path.exists(os.path.join(rc.SPRITE_DIR, spr["spr_" + n]["file"]))]
         item(not nofloor, "바닥 무더기 그림: " + (", ".join(_piles) or "줍기 안 함"),
              f"없는 것: {', '.join(nofloor)} — 바닥에 무더기를 두고  py measure_cook_cycle.py → 3번")
+        if FULL_ONLY:
+            nofull = [n for n in _drop if "full_" + n not in spr
+                      or not os.path.exists(os.path.join(rc.SPRITE_DIR, spr["full_" + n]["file"]))]
+            item(not nofull, "20개 칸 숫자 그림: " + ", ".join(_drop),
+                 f"없는 것: {', '.join(nofull)} — 인벤토리에 20개 꽉 찬 칸이 있을 때"
+                 "  py measure_cook_cycle.py → 5번")
     try:
         import cv2  # noqa: F401
         item(True, "opencv-python")
@@ -231,26 +262,94 @@ def load():
         return False
     load_am_layout()                        # (rc.load 가 다시 읽으므로 식장이 창 제목을 한 번 더 넣음)
     ac._scan_with_retries = _scan_stacked
+    if not load_full():
+        return False
     print("레시피:", ", ".join(f"{n} x{c}" for n, c in _recipe),
           "/ 줍기:", ", ".join(f"{n} {p}무더기" for n, p in _piles.items()) or "안 함",
-          "/ 버리기:", ", ".join(DROP) or "안 함")
+          "/ 버리기:", (", ".join(_drop) + (" (20개 칸만)" if FULL_ONLY else " (전부)")) if _drop else "안 함")
     return True
+
+
+FULL_ALIGN = 7          # 20개 칸 그림과 위치를 맞출 때 밀어보는 범위(px)
+
+
+def load_full():
+    """20개 칸 그림을 읽음 (measure_cook_cycle.py 5번 — 칸 크기에 맞춰 찍은 것)."""
+    _full.clear()
+    if not FULL_ONLY:
+        return True
+    for n in _drop:
+        v = rc._layout.get("sprites", {}).get("full_" + n)
+        try:
+            img = np.array(Image.open(os.path.join(rc.SPRITE_DIR, v["file"])).convert("RGB"), dtype=int)
+        except Exception:
+            print(f"[중단] '{n}' 20개 칸 숫자 그림이 없어요 — py measure_cook_cycle.py → 5번")
+            return False
+        if min(img.shape[:2]) < 2 * FULL_ALIGN + 16:
+            print(f"[중단] '{n}' 20개 칸 그림이 이상해요 ({img.shape[1]}x{img.shape[0]}) — measure_cook_cycle.py → 5번 다시")
+            return False
+        _full[n] = img
+    return True
+
+
+def number_diff(sct, pos, ref):
+    """칸의 왼쪽 위 숫자 부분이 20개 칸 그림과 얼마나 다른지 (다른 점 개수, 0 = 똑같음).
+
+    칸 안쪽 아래(아이콘)로 위치를 맞춘 다음, 위쪽 숫자 줄만 비교함.
+    비교 범위는 측정 때 칸 크기에 맞춰 찍은 그림 크기를 따름 (화면 배율이 커도 숫자가 안 잘림).
+    """
+    a = FULL_ALIGN
+    size = ref.shape[0]
+    inner = size - 2 * a                    # 칸 안쪽 크기
+    band = int(round(inner * 0.42))         # 위쪽 숫자 줄 높이
+    x0, y0 = pos[0] - size // 2, pos[1] - size // 2
+    shot = sct.grab({"left": int(x0), "top": int(y0), "width": size, "height": size})
+    reg = np.asarray(shot, dtype=int)[:, :, :3][:, :, ::-1]
+    t = ref[a:a + inner, a:a + inner]
+    low = t[band:]
+    best = None
+    for oy in range(2 * a + 1):
+        for ox in range(2 * a + 1):
+            d = np.abs(reg[oy + band:oy + inner, ox:ox + inner] - low).mean()
+            if best is None or d < best[0]:
+                best = (d, ox, oy)
+    _, ox, oy = best
+    diff = np.abs(reg[oy:oy + band, ox:ox + inner] - t[:band]).sum(axis=2)
+    return int((diff > 90).sum())
+
+
+def product_cells(sct, verbose=True):
+    """아이템 창에서 버릴 완성품 칸 중심 목록 — FULL_ONLY 면 숫자가 20 인 칸만."""
+    out, diffs = [], []
+    for pos, n in rc.item_contents(sct):
+        if n not in _drop:
+            continue
+        if FULL_ONLY:
+            d = number_diff(sct, pos, _full[n])
+            diffs.append(d)
+            if d > FULL_DIFF:
+                continue
+        out.append(pos)
+    if verbose and FULL_ONLY and diffs:
+        print(f"  [버리기] {'/'.join(_drop)} {len(diffs)}칸 — 숫자 차이 {diffs} "
+              f"(≤{FULL_DIFF} 이면 20개) → 버릴 칸 {len(out)}")
+    return out
 
 
 # ==================== ② 완성품 버리기 ====================
 
 def drop_products(sct):
-    """아이템 창의 완성품(DROP)을 하나씩 버릴 자리로 끌어다 놓음. 다 버렸으면 True.
+    """아이템 창의 완성품(DROP, FULL_ONLY 면 20개 칸만)을 하나씩 버릴 자리로 끌어다 놓음. 다 버렸으면 True.
 
-    버리면 칸이 당겨질 수 있어서 매번 아이템 창을 새로 읽고, 완성품 칸 수가 줄었는지 확인.
+    버리면 칸이 당겨질 수 있어서 매번 아이템 창을 새로 읽고, 버릴 칸 수가 줄었는지 확인.
     """
-    if not DROP:
+    if not _drop:
         return True
     left, fails, n_drop = None, 0, 0
     for _ in range(40):
         if not on():
             return False
-        cells = [pos for pos, n in rc.item_contents(sct) if n in DROP]
+        cells = product_cells(sct, verbose=left is None or fails > 0)
         if left is not None:
             if len(cells) < left:
                 n_drop += 1
@@ -402,6 +501,25 @@ def worker():
         ac.release_keys()
 
 
+def number_test():
+    """아이템 창의 완성품 칸마다 숫자 차이를 보여줌 (버리지 않음). 아이템 창이 없으면 아이콘을 눌러 엶."""
+    if not load():
+        return
+    if not FULL_ONLY:
+        print("FULL_ONLY = False 라서 완성품 칸을 전부 버립니다 (숫자 안 봄)")
+        return
+    set_running(True)
+    try:
+        with mss.mss() as sct:
+            for pos, n in rc.item_contents(sct):
+                if n in _drop:
+                    d = number_diff(sct, pos, _full[n])
+                    print(f"  {pos} {n}: 숫자 차이 {d} → {'20개 (버림)' if d <= FULL_DIFF else '20개 아님 (둠)'}")
+    finally:
+        set_running(False)
+    print(f"(20개 칸은 0 근처, 아닌 칸은 훨씬 큰 숫자가 나와야 정상. 기준 FULL_DIFF = {FULL_DIFF})")
+
+
 def toggle():
     set_running(not running)
     ac._scan_cache = None
@@ -439,6 +557,8 @@ if __name__ == "__main__":
     try:
         if len(sys.argv) > 1 and sys.argv[1] == "점검":
             precheck()                  # 준비가 다 됐는지만 확인 (아무것도 안 누름)
+        elif len(sys.argv) > 1 and sys.argv[1] == "숫자":
+            number_test()               # 완성품 칸마다 20개로 보는지 확인 (버리지 않음)
         else:
             main()
     except Exception:
