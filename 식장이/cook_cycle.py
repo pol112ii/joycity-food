@@ -54,6 +54,7 @@ FULL_DIFF = 6                       # 숫자 부분이 20개 칸 그림과 이�
 FOOD = "아까비깡"                   # 버리기 전에 아이템 창에서 전부 먹을 것. 안 먹으려면 FOOD = ""
 MAX_ROUNDS = 20                     # 한 바퀴에 요리 최대 횟수 (재료가 먼저 떨어지면 거기서 끝)
 DROP_SPREAD = (30, 15)              # 버릴 자리에서 이만큼(px) 안쪽으로 매번 조금씩 다르게 놓음 (좌우, 위아래)
+DROP_TRIES = 5                      # 한 칸이 안 버려지면 이만큼까지 다시 해봄 (다시 할 때마다 놓는 범위를 조금 넓힘)
 
 running = False
 alive = True
@@ -338,38 +339,47 @@ def product_cells(sct, verbose=True):
 
 # ==================== ② 완성품 버리기 ====================
 
-def drop_products(sct):
+def drop_products(sct, limit=None):
     """아이템 창의 완성품(DROP, FULL_ONLY 면 20개 칸만)을 하나씩 버릴 자리로 끌어다 놓음. 다 버렸으면 True.
 
     버리면 칸이 당겨질 수 있어서 매번 아이템 창을 새로 읽고, 버릴 칸 수가 줄었는지 확인.
+    안 줄었으면 잠깐 뒤 한 번 더 보고(게임이 늦게 반영할 때), 그래도 그대로면 다시 끌어다 놓음
+    — 한 칸에 DROP_TRIES 번까지. limit = 이만큼만 버리고 끝 (시험용).
     """
     if not _drop:
         return True
-    left, fails, n_drop = None, 0, 0
-    for _ in range(40):
+    n_drop = retries = fails = 0
+    cells = product_cells(sct)
+    for _ in range(100):
         if not on():
             return False
-        cells = product_cells(sct, verbose=left is None or fails > 0)
-        if left is not None:
-            if len(cells) < left:
-                n_drop += 1
-                fails = 0
-            else:
-                fails += 1
-                print("  [버리기] 안 버려진 것 같음 → 다시")
-                if fails >= 2:
-                    print("[문제] 완성품을 끌어다 놓아도 안 버려짐 — 버릴 자리(measure_cook_cycle.py 4번) 확인")
-                    return False
-        if not cells:
+        if not cells or (limit is not None and n_drop >= limit):
             break
         left = len(cells)
         x, y = rc.main_pt("drop_spot")
-        dst = (x + random.randint(-DROP_SPREAD[0], DROP_SPREAD[0]),
-               y + random.randint(-DROP_SPREAD[1], DROP_SPREAD[1]))
-        print(f"  [버리기] 완성품 → 바닥 ({dst[0]}, {dst[1]})  (남은 칸 {left})")
+        k = 1 + 0.25 * fails                # 다시 할 때는 조금 더 넓게 (최대 2배)
+        sx, sy = int(DROP_SPREAD[0] * k), int(DROP_SPREAD[1] * k)
+        dst = (x + random.randint(-sx, sx), y + random.randint(-sy, sy))
+        print(f"  [버리기] 완성품 → 바닥 ({dst[0]}, {dst[1]})  (남은 칸 {left}"
+              + (f", 다시 {fails}/{DROP_TRIES}" if fails else "") + ")")
         ac.human_drag(cells[0], dst)
-    if n_drop:
-        print(f"[버리기] 완성품 {n_drop}칸 버림")
+        cells = product_cells(sct, verbose=False)
+        if len(cells) >= left:              # 게임이 늦게 반영할 수 있어서 잠깐 뒤 한 번 더 봄
+            time.sleep(random.uniform(0.8, 1.2))
+            cells = product_cells(sct, verbose=False)
+        if len(cells) < left:
+            n_drop += 1
+            fails = 0
+            continue
+        fails += 1
+        retries += 1
+        print(f"  [버리기] 안 버려진 것 같음 ({fails}/{DROP_TRIES})")
+        if fails >= DROP_TRIES:
+            print(f"[문제] 완성품을 {DROP_TRIES}번 끌어다 놓아도 안 버려짐"
+                  " — 버릴 자리(measure_cook_cycle.py 4번) / py cook_test.py 로 확인")
+            return False
+    if n_drop or retries:
+        print(f"[버리기] 완성품 {n_drop}칸 버림" + (f" (다시 한 것 {retries}번)" if retries else ""))
     ac._scan_cache = None                   # 칸 배치가 바뀌었으니 요리 봇이 새로 스캔하게
     am._scan_cache = None
     return True
