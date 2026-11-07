@@ -53,6 +53,7 @@ CHECK_SLOTS = True                  # 재료를 넣은 뒤 칸마다 레시피�
                                     # (다르면 제작 창을 닫아 재료를 돌려받고 다시 넣음)
 SLOT_LOOSE = 1.4                    # 재료 확인 때 칸 그림이 기준보다 이만큼(배)까지 흐려도 레시피 재료로 봄
 GAME_FAIL_STOP = 3                  # 의장이가 연속 이만큼 실패(점수 못 채움)하면 이번 바퀴를 멈추고 정리
+CART_ALT = False                   # True = 리어카맨을 Alt 키를 누른 채로 누름 (게임에서 Alt = 바닥 아이템을 줍지 않고 이동)
 
 running = False
 alive = True
@@ -126,6 +127,7 @@ def apply_settings():
     rc.FOOD = FOOD or "아까비깡"     # (그림이 없으면 마결자동 쪽에서 경고만 함)
     rc.MAX_ROUNDS = MAX_ROUNDS
     rc.SELL_AT = SELL_AT
+    rc.CART_ALT = CART_ALT
     rc.REST = False                  # 쉬는 시간 없음
     sew.REST = False
     if not FOOD:
