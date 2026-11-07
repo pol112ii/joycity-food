@@ -1126,7 +1126,8 @@ def release_keys():
 
 
 def cart_click(sct, cart, body, extra, tol, avoid, alts):
-    """리어카맨 따라가서 누르기 — CART_ALT 면 따라가는 동안 Alt 를 누르고 있다가 누른 뒤 뗌."""
+    """리어카맨 따라가서 누르기 — CART_ALT 면 따라가는 동안 Alt 를 누르고 있다가 누른 뒤 뗌.
+    (게임에서 Alt = 바닥 아이템을 줍지 않고 이동 → 리어카맨 밑의 재료를 안 주움)"""
     if not CART_ALT:
         return chase_click(sct, cart, body, extra, tol=tol, avoid=avoid, alts=alts)
     res = None
@@ -1136,12 +1137,6 @@ def cart_click(sct, cart, body, extra, tol, avoid, alts):
         res = chase_click(sct, cart, body, extra, tol=tol, avoid=avoid, alts=alts)
         time.sleep(random.uniform(0.03, 0.08))
     finally:
-        if res is None:
-            # 클릭 없이 Alt 만 눌렀다 떼면 창 메뉴가 잡혀서 다음 클릭이 씹힐 수 있음 → Ctrl 을 한 번 섞음
-            try:
-                pyautogui.press("ctrl")
-            except Exception:
-                pass
         _alt(False)
     return res
 
