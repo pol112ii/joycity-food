@@ -56,6 +56,8 @@ CART_WAIT = 20                      # 고물소환 후 리어카맨이 나타나
 CART_OPEN_WAIT = 3.0                # 리어카맨을 누른 뒤 되팔기 창이 뜨길 기다리는 시간(초). 이 안에 또 누르지 않음
                                     # (창이 늦게 뜨는 컴퓨터에서 또 누르면 그 자리 바닥 재료를 주워버림)
 PILE_MARGIN = 10                    # 바닥 재료 무더기에서 이만큼(px) 안쪽은 리어카맨을 누르지 않음 (재료가 주워짐)
+CART_ALT = False                    # True = 리어카맨을 Alt 키를 누른 채로 누름 (실험 — 더 잘 눌리는지)
+                                    # 켜고/끄고 돌린 결과는 cart_log.txt 에 쌓임 →  py ring_cycle.py 기록  으로 비교
 SPRITE_SURE = 0.62                  # 바닥 재료 그림 일치 기준 (0~1, 높을수록 엄격). 석분은 무더기끼리
                                     # 많이 겹쳐서 0.6대로 나옴 — 주운 뒤 아이템 창으로 확인하니 안전
 LABEL_SURE = 0.60                   # 리어카맨 이름 글자 일치 기준
@@ -1111,6 +1113,85 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=(), alts=
 _sell_target = None             # 이번에 몇 개 쌓이면 팔지 (팔 때마다 새로 뽑음)
 
 
+def _alt(down):
+    try:
+        (pyautogui.keyDown if down else pyautogui.keyUp)("altleft")
+    except Exception:
+        pass
+
+
+def release_keys():
+    """눌려 있을 수 있는 키를 뗌 (멈출 때 / 매크로 방지 창이 뜰 때)."""
+    _alt(False)
+
+
+def cart_click(sct, cart, body, extra, tol, avoid, alts):
+    """리어카맨 따라가서 누르기 — CART_ALT 면 따라가는 동안 Alt 를 누르고 있다가 누른 뒤 뗌."""
+    if not CART_ALT:
+        return chase_click(sct, cart, body, extra, tol=tol, avoid=avoid, alts=alts)
+    res = None
+    _alt(True)
+    try:
+        time.sleep(random.uniform(0.05, 0.12))
+        res = chase_click(sct, cart, body, extra, tol=tol, avoid=avoid, alts=alts)
+        time.sleep(random.uniform(0.03, 0.08))
+    finally:
+        if res is None:
+            # 클릭 없이 Alt 만 눌렀다 떼면 창 메뉴가 잡혀서 다음 클릭이 씹힐 수 있음 → Ctrl 을 한 번 섞음
+            try:
+                pyautogui.press("ctrl")
+            except Exception:
+                pass
+        _alt(False)
+    return res
+
+
+_cart_log = {"sells": 0, "clicks": 0, "first": 0}
+
+
+def log_cart(tried, opened):
+    """리어카맨을 몇 번 눌러서 열렸는지 기록 (Alt 켬/끔 비교용 — cart_log.txt)."""
+    s = _cart_log
+    s["sells"] += 1
+    s["clicks"] += tried
+    s["first"] += int(opened and tried == 1)
+    print(f"  [리어카 기록] Alt {'켬' if CART_ALT else '끔'} — 이번 {tried}번 클릭"
+          f"{'에 열림' if opened else ', 안 열림'} / 지금까지 {s['sells']}번 중 첫 클릭에 열림 {s['first']}번,"
+          f" 평균 {s['clicks'] / s['sells']:.1f}번 클릭")
+    try:
+        with open(os.path.join(HERE, "cart_log.txt"), "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M')}\talt={'on' if CART_ALT else 'off'}"
+                    f"\tclicks={tried}\t{'ok' if opened else 'fail'}\n")
+    except Exception:
+        pass
+
+
+def cart_report():
+    """cart_log.txt 를 Alt 켬/끔으로 나눠서 비교."""
+    path = os.path.join(HERE, "cart_log.txt")
+    if not os.path.exists(path):
+        print("cart_log.txt 가 아직 없어요 — 리어카맨에게 한 번이라도 팔고 나면 생김")
+        return
+    stat = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            parts = dict(p.split("=", 1) for p in line.strip().split("\t")[1:] if "=" in p)
+            if "alt" not in parts:
+                continue
+            st = stat.setdefault(parts["alt"], [0, 0, 0, 0])      # 팔기, 클릭, 첫 클릭, 실패
+            st[0] += 1
+            st[1] += int(parts.get("clicks", 0))
+            st[2] += int(line.rstrip().endswith("ok") and parts.get("clicks") == "1")
+            st[3] += int(line.rstrip().endswith("fail"))
+    print("\n리어카맨 클릭 기록 (cart_log.txt)")
+    for k, name in (("off", "Alt 끔"), ("on", "Alt 켬")):
+        if k in stat:
+            n, c, f1, bad = stat[k]
+            print(f"   {name}: {n}번 — 첫 클릭에 열림 {f1}번 ({f1 * 100 // n}%), 평균 {c / n:.1f}번 클릭, 끝내 안 열림 {bad}번")
+        else:
+            print(f"   {name}: 기록 없음")
+
+
 def pick_sell_target():
     if isinstance(SELL_AT, (tuple, list)):
         return random.randint(int(SELL_AT[0]), int(SELL_AT[1]))
@@ -1158,11 +1239,12 @@ def sell_all(sct):
     alts = spots + [(-int(0.15 * dy), -int(0.08 * dy)), (int(0.15 * dy), -int(0.08 * dy)), (0, -int(0.3 * dy))]
     tol = max(5, int(0.12 * dy))              # 커서가 몸통에서 이만큼 안이면 누름
     clicks = []                               # 이번 리어카맨을 누른 자리 (안 움직이는지 보려고)
+    tried = 0                                 # 이번에 리어카맨을 누른 횟수 (기록용)
     opened = False
     avoid += pile_boxes(sct)                  # 바닥 재료 위에서는 누르지 않음 (주워버리니까)
     for attempt in range(5):
         for sx, sy in spots:
-            res = chase_click(sct, cart, body, (sx, sy), tol=tol, avoid=avoid, alts=alts)
+            res = cart_click(sct, cart, body, (sx, sy), tol, avoid, alts)
             if res is None:
                 # 놓침 → 화면 전체에서 다시 찾음 (방금 보던 곳에서 가까운 것)
                 found = _far(find_sprite(sct, "cart_label", LABEL_SURE, binary=True), _bad_carts)
@@ -1173,6 +1255,7 @@ def sell_all(sct):
                 continue
             tx, ty, cart = res
             clicks.append(cart[:2])
+            tried += 1
             print(f"  리어카맨 클릭 → ({tx}, {ty})  (이름 일치 {cart[2]:.2f})")
             if wait_title("sell", True, CART_OPEN_WAIT):
                 opened = True
@@ -1202,6 +1285,8 @@ def sell_all(sct):
             continue
         if not lost:
             cart = min(found, key=lambda c: (c[0] - cart[0]) ** 2 + (c[1] - cart[1]) ** 2)
+    if tried:
+        log_cart(tried, opened)
     if not opened:
         print("[문제] 리어카맨을 눌러도 되팔기 창이 안 뜸 — cart_debug.png 를 보내주세요")
         return False
@@ -1342,7 +1427,10 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        if len(sys.argv) > 1 and sys.argv[1] == "기록":
+            cart_report()               # 리어카맨 클릭 기록 비교 (Alt 켬/끔)
+        else:
+            main()
     except Exception:
         import traceback
         print("\n\n[에러 발생] 아래 내용을 복사해서 알려주세요:\n")
