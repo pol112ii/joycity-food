@@ -1015,7 +1015,13 @@ def locate_near(sct, c, radius):
 
 
 def pile_boxes(sct):
-    """바닥 재료 무더기가 있는 자리들 (x0, y0, x1, y1) — 리어카맨을 누를 때 이 위는 피함."""
+    """바닥 재료 무더기가 있는 자리들 (x0, y0, x1, y1) — 리어카맨을 누를 때 이 위는 피함.
+
+    CART_ALT 면 피하지 않음 — Alt 를 누른 채로 누르면 재료를 안 주워서, 피할 필요가 없고
+    (방이 재료로 꽉 찬 경우 피하다가 리어카맨을 아예 못 누를 수 있음).
+    """
+    if CART_ALT:
+        return []
     boxes = []
     for name in PILES:
         key = "spr_" + name
