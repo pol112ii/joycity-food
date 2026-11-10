@@ -12,6 +12,7 @@ cook_cycle.py 의 설정 / 측정값을 그대로 씀. 어느 구간이 잘 안 
    4. 바닥 재료 줍기 (레시피 무더기 수만큼)
    5. 요리 1판 (재료 넣기 → 요리)
    6. 한 바퀴 전체 (먹기 → 버리기 → 줍기 → 요리, 재료 떨어질 때까지)
+   0. 완성품 칸 아무거나 하나 버리기 (20개가 아니어도 — 끌어다 놓기가 되는지 시험. 버린 건 눌러서 다시 주우면 됨)
    --- 클릭 안 하는 확인 ---
    7. 아이템 창 읽기 (칸마다 이름 / 20개 여부)  ※ 아이템 창이 닫혀 있으면 여는 것만
    8. 바닥 재료 찾기 (찾은 개수 / 일치 점수, floor_debug.png 저장)
@@ -38,6 +39,7 @@ MENU = """
  4. 바닥 재료 줍기
  5. 요리 1판
  6. 한 바퀴 전체 (먹기 → 버리기 → 줍기 → 요리)
+ 0. 완성품 칸 아무거나 하나 버리기 (20개 아니어도 — 끌어다 놓기 시험)
  --- 클릭 안 하는 확인 ---
  7. 아이템 창 읽기 (칸마다 이름 / 20개 여부)
  8. 바닥 재료 찾기 (floor_debug.png 저장)
@@ -60,13 +62,31 @@ def t_eat(sct):
 
 
 def t_drop(sct, limit):
+    if cc.FULL_ONLY and not cc._full:
+        print("\n결과: 20개 칸 숫자 그림이 아직 없어요 — 20개 칸이 생기면 py measure_cook_cycle.py → 5번"
+              "\n      (끌어다 놓기만 시험하려면 0번)")
+        return False
     before = len(cc.product_cells(sct))
     if before == 0:
-        print("\n결과: 버릴 칸이 없어요 (20개 칸이 없거나 못 알아봄 → 7번으로 확인)")
+        print("\n결과: 버릴 칸이 없어요 (" + ("20개 칸이 없거나 못 알아봄" if cc.FULL_ONLY else "완성품 칸을 못 찾음")
+              + " → 7번으로 확인)")
         return False
     ok = cc.drop_products(sct, limit=limit)
     after = len(cc.product_cells(sct, verbose=False))
     print(f"\n결과: {'성공' if ok else '실패'} — 버릴 칸 {before} → {after}")
+    return ok
+
+
+def t_drop_any(sct):
+    """20개가 아니어도 완성품 칸 하나를 버려봄 (끌어다 놓기 시험)."""
+    keep = cc.FULL_ONLY
+    cc.FULL_ONLY = False
+    try:
+        ok = t_drop(sct, 1)
+    finally:
+        cc.FULL_ONLY = keep
+    if ok:
+        print("   (버린 완성품은 바닥에서 눌러 다시 주우면 됨)")
     return ok
 
 
@@ -122,7 +142,7 @@ def t_read(sct):
             label = "?"
         else:
             label = n
-            if n in cc._drop and cc.FULL_ONLY:
+            if n in cc._full and cc.FULL_ONLY:
                 d = cc.number_diff(sct, pos, cc._full[n])
                 label += f"(20개)" if d <= cc.FULL_DIFF else f"({d})"
         rows.append(label)
@@ -178,6 +198,7 @@ TESTS = {
     "4": ("바닥 재료 줍기", t_pick),
     "5": ("요리 1판", lambda sct: t_cook(sct, 1)),
     "6": ("한 바퀴 전체", t_cycle),
+    "0": ("완성품 칸 아무거나 하나 버리기 (끌어다 놓기 시험)", t_drop_any),
     "7": ("아이템 창 읽기", t_read),
     "8": ("바닥 재료 찾기", t_floor),
     "9": ("버릴 자리로 마우스만", t_spot),
@@ -229,7 +250,7 @@ def main():
         if not ans:
             break
         if ans not in TESTS:
-            print("1~9 중에서 고르세요")
+            print("0~9 중에서 고르세요")
             continue
         run(ans)
     cc.set_alive(False)

@@ -244,9 +244,11 @@ def precheck():
         if FULL_ONLY:
             nofull = [n for n in _drop if "full_" + n not in spr
                       or not os.path.exists(os.path.join(rc.SPRITE_DIR, spr["full_" + n]["file"]))]
-            item(not nofull, "20개 칸 숫자 그림: " + ", ".join(_drop),
-                 f"없는 것: {', '.join(nofull)} — 인벤토리에 20개 꽉 찬 칸이 있을 때"
-                 "  py measure_cook_cycle.py → 5번")
+            if not nofull:
+                item(True, "20개 칸 숫자 그림: " + ", ".join(_drop))
+            else:                           # 없어도 시작은 함 — 버리기만 건너뛰고 요리는 계속
+                print(f"  △ 20개 칸 숫자 그림 없음 ({', '.join(nofull)}) — 완성품 버리기는 건너뛰고 요리만 함"
+                      "\n      → 20개 꽉 찬 칸이 생기면  py measure_cook_cycle.py → 5번  (그때부터 버림)")
     try:
         import cv2  # noqa: F401
         item(True, "opencv-python")
@@ -284,8 +286,7 @@ def load_full():
         try:
             img = np.array(Image.open(os.path.join(rc.SPRITE_DIR, v["file"])).convert("RGB"), dtype=int)
         except Exception:
-            print(f"[중단] '{n}' 20개 칸 숫자 그림이 없어요 — py measure_cook_cycle.py → 5번")
-            return False
+            continue                        # 아직 안 잰 것 — 그 완성품은 버리지 않고 둠 (점검에서 안내함)
         if min(img.shape[:2]) < 2 * FULL_ALIGN + 16:
             print(f"[중단] '{n}' 20개 칸 그림이 이상해요 ({img.shape[1]}x{img.shape[0]}) — measure_cook_cycle.py → 5번 다시")
             return False
@@ -326,6 +327,8 @@ def product_cells(sct, verbose=True):
         if n not in _drop:
             continue
         if FULL_ONLY:
+            if n not in _full:              # 20개 칸 그림을 아직 안 잼 → 버리지 않음
+                continue
             d = number_diff(sct, pos, _full[n])
             diffs.append(d)
             if d > FULL_DIFF:
@@ -347,6 +350,12 @@ def drop_products(sct, limit=None):
     — 한 칸에 DROP_TRIES 번까지. limit = 이만큼만 버리고 끝 (시험용).
     """
     if not _drop:
+        return True
+    if FULL_ONLY and not any(n in _full for n in _drop):
+        # 20개 칸 그림이 아직 없음 → 버리지 않고 넘어감. 완성품 칸이 2칸 이상이면 한 칸은 꽉 찬 것
+        have = sum(1 for _, n in rc.item_contents(sct) if n in _drop)
+        print(f"[버리기] 20개 칸 그림이 아직 없어서 건너뜀 (완성품 {have}칸)"
+              + (" ★ 20개 칸이 생긴 것 같아요 → 멈추고  py measure_cook_cycle.py → 5번" if have >= 2 else ""))
         return True
     n_drop = retries = fails = 0
     cells = product_cells(sct)
@@ -518,11 +527,14 @@ def number_test():
     if not FULL_ONLY:
         print("FULL_ONLY = False 라서 완성품 칸을 전부 버립니다 (숫자 안 봄)")
         return
+    if not _full:
+        print("20개 칸 숫자 그림이 아직 없어요 — 20개 꽉 찬 칸이 생기면  py measure_cook_cycle.py → 5번")
+        return
     set_running(True)
     try:
         with mss.mss() as sct:
             for pos, n in rc.item_contents(sct):
-                if n in _drop:
+                if n in _full:
                     d = number_diff(sct, pos, _full[n])
                     print(f"  {pos} {n}: 숫자 차이 {d} → {'20개 (버림)' if d <= FULL_DIFF else '20개 아님 (둠)'}")
     finally:

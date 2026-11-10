@@ -174,7 +174,7 @@ def main():
     print(" 식장이 사이클 준비 (F1 = 기록, F2 = 방금 것 다시, ESC = 그만)")
     print(" 바닥 무더기 그림을 잴 재료:", ", ".join(names))
     if full_names():
-        print(" 20개 칸 숫자 그림을 잴 완성품:", ", ".join(full_names()), " (인벤토리에 20개 꽉 찬 칸이 있어야 함)")
+        print(" 20개 칸 숫자 그림을 잴 완성품:", ", ".join(full_names()), " (20개 꽉 찬 칸이 아직 없으면 나중에 따로 재도 됨)")
     print("=" * 64)
     cw = mr.craft_window()
     if cw is None:
@@ -190,8 +190,16 @@ def main():
         dpi = int(ctypes.windll.user32.GetDpiForSystem())
     except Exception:
         dpi = None
-    all_steps, groups = build_steps(names, full_names())
+    fulls = full_names()
+    all_steps, groups = build_steps(names, fulls)
     steps, old = choose(all_steps, groups)
+    if old is None and fulls:
+        ans = input(f"\n인벤토리에 {'/'.join(fulls)} 20개 꽉 찬 칸이 지금 있나요?  (있으면 그냥 엔터 / 없으면 n 엔터): ")
+        if ans.strip().lower() in ("n", "no", "ㅜ", "없음", "없어", "아니", "아니오"):
+            skip = set(groups[-1][1])
+            steps = [s for i, s in enumerate(all_steps) if i not in skip]
+            print("→ 20개 칸은 건너뜀 — 생기면  py measure_cook_cycle.py → 5번  만 재면 됨"
+                  " (그때까지는 버리지 않고 요리만 함)")
     if old is not None:
         data = old
         data.setdefault("titles", {})["main"] = mw.title
@@ -290,8 +298,10 @@ def main():
         print(f"   아이템 칸 간격: 가로 {(p['item_row1_last']['dx'] - p['item_first']['dx']) / 5:.1f}"
               f" / 세로 {(p['item_row5_first']['dy'] - p['item_first']['dy']) / 4:.1f}  (둘이 거의 같아야 정상)")
     print(f"   그림: {', '.join(v['file'] for v in data['sprites'].values())}")
-    if full_names():
+    if any(k.startswith("full_") for k in data["sprites"]):
         print("   20개 칸 숫자 그림이 맞게 찍혔는지:  py cook_cycle.py 숫자  (버리지 않고 칸마다 확인만)")
+    elif full_names():
+        print("   20개 칸 숫자 그림: 아직 없음 — 20개 꽉 찬 칸이 생기면  py measure_cook_cycle.py → 5번")
     data["saved_at"] = time.strftime("%Y-%m-%d %H:%M")
     tmp = mr.OUT + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
