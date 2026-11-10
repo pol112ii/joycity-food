@@ -3,7 +3,7 @@
 식장이 자동 반복 — 아까비깡 먹기 → 완성품 바닥에 버리기 → 재료 줍기 → 요리(재료 떨어질 때까지) → 반복
 
   ① 아이템 창에서 아까비깡을 전부 먹기          (마결자동 ring_cycle.py 와 똑같이)
-  ② 아이템 창의 완성품 중 20개 꽉 찬 칸만 바닥(버릴 자리)으로 끌어다 놓기
+  ② 아이템 창의 완성품 중 20개 꽉 찬 칸만 방의 빈 바닥을 찾아서 끌어다 놓기 (물건이 있는 칸엔 안 놓이므로)
   ③ 방 바닥에서 재료 무더기 줍기               (마결자동과 똑같이)
   ④ 요리 — auto_cook.py 의 재료 넣기/요리를 그대로 써서 재료가 떨어질 때까지
   ⑤ ①로
@@ -53,8 +53,10 @@ FULL_DIFF = 6                       # 숫자 부분이 20개 칸 그림과 이�
                                     #   (py cook_cycle.py 숫자  로 칸마다 차이를 보고 조절)
 FOOD = "아까비깡"                   # 버리기 전에 아이템 창에서 전부 먹을 것. 안 먹으려면 FOOD = ""
 MAX_ROUNDS = 20                     # 한 바퀴에 요리 최대 횟수 (재료가 먼저 떨어지면 거기서 끝)
-DROP_SPREAD = (30, 15)              # 버릴 자리에서 이만큼(px) 안쪽으로 매번 조금씩 다르게 놓음 (좌우, 위아래)
-DROP_TRIES = 5                      # 한 칸이 안 버려지면 이만큼까지 다시 해봄 (다시 할 때마다 놓는 범위를 조금 넓힘)
+DROP_CLEAR = 22                     # 내릴 자리 = 물건/벽에서 이만큼(px) 이상 떨어진 '빈 바닥' (물건이 있는 칸에는 안 놓이니까)
+                                    #   작게 하면 촘촘히 놓음 — 너무 작으면 옆 물건 칸에 걸려서 안 놓임
+FLOOR_TOL = 28                      # 바닥 색과 이만큼(0~255)까지 달라도 빈 바닥으로 봄 (py cook_test.py 8번 그림으로 확인)
+DROP_TRIES = 6                      # 한 칸이 안 버려지면 이만큼까지 다른 빈 자리로 다시 해봄
 
 running = False
 alive = True
@@ -237,6 +239,9 @@ def precheck():
         miss = [n for n in RING_POINTS if n not in pts]
         item(not miss, "  아이템 아이콘 / 아이템 창 칸 / 버릴 자리",
              f"py measure_cook_cycle.py (빠진 것: {', '.join(miss)})")
+        if "drop_spot" in pts and _drop:
+            item("floor_rgb" in pts["drop_spot"], "  빈 바닥 색 (빈 자리를 찾아서 내리는 데 씀)",
+                 "py measure_cook_cycle.py → 4번 (버릴 자리를 사방이 빈 바닥인 곳으로 다시 찍기)")
         nofloor = [n for n in _piles if "spr_" + n not in spr
                    or not os.path.exists(os.path.join(rc.SPRITE_DIR, spr["spr_" + n]["file"]))]
         item(not nofloor, "바닥 무더기 그림: " + (", ".join(_piles) or "줍기 안 함"),
@@ -342,12 +347,78 @@ def product_cells(sct, verbose=True):
 
 # ==================== ② 완성품 버리기 ====================
 
-def drop_products(sct, limit=None):
-    """아이템 창의 완성품(DROP, FULL_ONLY 면 20개 칸만)을 하나씩 버릴 자리로 끌어다 놓음. 다 버렸으면 True.
+_bad_spots = []         # 내려놓아도 안 놓이던 자리 (화면엔 빈 바닥인데 안 되는 곳) — 다시 안 씀
 
-    버리면 칸이 당겨질 수 있어서 매번 아이템 창을 새로 읽고, 버릴 칸 수가 줄었는지 확인.
-    안 줄었으면 잠깐 뒤 한 번 더 보고(게임이 늦게 반영할 때), 그래도 그대로면 다시 끌어다 놓음
-    — 한 칸에 DROP_TRIES 번까지. limit = 이만큼만 버리고 끝 (시험용).
+
+def floor_mask(sct):
+    """게임 창에서 '빈 바닥' 인 곳 = 1, 아닌 곳 = 0 인 그림과 그 왼쪽 위 화면 좌표.
+
+    측정 때 저장한 빈 바닥 색과 비슷한 곳만 바닥으로 봄 → 물건/그림자/캐릭터/벽/창은 전부 0.
+    """
+    cv2 = rc.cv2
+    w = rc.main_win()
+    img = rc.shot_bgr(sct, w.left, w.top, w.width, w.height).astype(int)
+    ref = np.array(rc._layout["points"]["drop_spot"]["floor_rgb"][::-1])
+    m = (np.abs(img - ref).max(axis=2) <= FLOOR_TOL).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))    # 바닥 무늬의 점 같은 구멍은 메움
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))     # 물건 안의 점 같은 바닥색은 지움
+    try:                                    # 아래 메뉴 줄과 채팅창은 방이 아님
+        bottom = int(rc.main_pt("item_icon")[1] - 30 * rc.scale()) - w.top
+        m[max(0, bottom):] = 0
+    except Exception:
+        pass
+    pad = DROP_CLEAR // 2
+    for a, b, c, d in rc.other_windows():   # 방 위에 떠 있는 창 (아이템 / 제작 / 직업 …)
+        m[max(0, b - w.top - pad):max(0, d - w.top + pad), max(0, a - w.left - pad):max(0, c - w.left + pad)] = 0
+    m[0], m[-1], m[:, 0], m[:, -1] = 0, 0, 0, 0
+    return m, (w.left, w.top)
+
+
+def empty_spots(sct, count=1):
+    """내려놓을 수 있는 빈 바닥 자리를 '버릴 자리'(측정 4번)에서 가까운 순으로 [(x, y, 여유px), ...].
+
+    빈 바닥 중에서도 물건/벽에서 DROP_CLEAR 이상 떨어진 곳만 고름 (모자라면 여유를 조금 줄여서 다시).
+    안 놓이던 자리(_bad_spots) 근처는 뺌.
+    """
+    cv2 = rc.cv2
+    m, (ox, oy) = floor_mask(sct)
+    dist = cv2.distanceTransform(m, cv2.DIST_L2, 5)
+    for bx, by in _bad_spots:
+        cv2.circle(dist, (int(bx - ox), int(by - oy)), int(DROP_CLEAR), 0, -1)
+    ax, ay = rc.main_pt("drop_spot")
+    out = []
+    for clear in (DROP_CLEAR, DROP_CLEAR * 0.8, DROP_CLEAR * 0.65):
+        d = dist.copy()
+        while len(out) < count:
+            ys, xs = np.nonzero(d >= clear)
+            if len(xs) == 0:
+                break
+            j = int(np.argmin((xs + ox - ax) ** 2 + (ys + oy - ay) ** 2))
+            x, y = int(xs[j]), int(ys[j])
+            out.append((x + ox, y + oy, float(dist[y, x])))
+            cv2.circle(d, (x, y), int(DROP_CLEAR * 1.6), 0, -1)     # 다음 후보는 이 자리에서 떨어진 곳
+        if out:
+            break
+    return out
+
+
+def no_space():
+    """빈 바닥이 없을 때 — 멈추고 알림 (계속 만들면 인벤토리가 가득 참)."""
+    print("⏸ [버리기] 내려놓을 빈 바닥을 못 찾음 — 방 바닥을 치우거나 버릴 자리를 다시 찍고(F8) 다시 시작"
+          "\n   (py cook_test.py 8번: floor_debug.png 에서 밝게 보이는 곳이 봇이 보는 '빈 바닥')")
+    try:
+        ac.notify("완성품을 내려놓을 빈 바닥이 없어서 멈췄어요", key="nospace", photo=True)
+    except Exception:
+        pass
+    set_running(False)
+
+
+def drop_products(sct, limit=None):
+    """아이템 창의 완성품(DROP, FULL_ONLY 면 20개 칸만)을 하나씩 빈 바닥으로 끌어다 놓음. 다 버렸으면 True.
+
+    물건이 이미 있는 칸에는 안 놓이고 인벤토리로 돌아오므로, 매번 화면에서 빈 바닥을 찾아 그 자리에 놓음.
+    놓은 뒤 아이템 창을 새로 읽어서 버릴 칸 수가 줄었는지 확인 (게임이 늦게 반영할 수 있어 한 번 더 봄).
+    안 줄었으면 그 자리는 다시 안 쓰고 다른 빈 자리로 — 한 칸에 DROP_TRIES 번까지. limit = 이만큼만 (시험용).
     """
     if not _drop:
         return True
@@ -358,6 +429,7 @@ def drop_products(sct, limit=None):
               + (" ★ 20개 칸이 생긴 것 같아요 → 멈추고  py measure_cook_cycle.py → 5번" if have >= 2 else ""))
         return True
     n_drop = retries = fails = 0
+    tried = []                              # 이번에 안 놓이던 자리
     cells = product_cells(sct)
     for _ in range(100):
         if not on():
@@ -365,13 +437,14 @@ def drop_products(sct, limit=None):
         if not cells or (limit is not None and n_drop >= limit):
             break
         left = len(cells)
-        x, y = rc.main_pt("drop_spot")
-        k = 1 + 0.25 * fails                # 다시 할 때는 조금 더 넓게 (최대 2배)
-        sx, sy = int(DROP_SPREAD[0] * k), int(DROP_SPREAD[1] * k)
-        dst = (x + random.randint(-sx, sx), y + random.randint(-sy, sy))
-        print(f"  [버리기] 완성품 → 바닥 ({dst[0]}, {dst[1]})  (남은 칸 {left}"
+        spots = empty_spots(sct)
+        if not spots:
+            no_space()
+            return False
+        x, y, room = spots[0]
+        print(f"  [버리기] 완성품 → 빈 바닥 ({x}, {y})  (주변 여유 {room:.0f}px, 남은 칸 {left}"
               + (f", 다시 {fails}/{DROP_TRIES}" if fails else "") + ")")
-        ac.human_drag(cells[0], dst)
+        ac.human_drag(cells[0], (x, y))
         cells = product_cells(sct, verbose=False)
         if len(cells) >= left:              # 게임이 늦게 반영할 수 있어서 잠깐 뒤 한 번 더 봄
             time.sleep(random.uniform(0.8, 1.2))
@@ -382,13 +455,18 @@ def drop_products(sct, limit=None):
             continue
         fails += 1
         retries += 1
-        print(f"  [버리기] 안 버려진 것 같음 ({fails}/{DROP_TRIES})")
+        _bad_spots.append((x, y))
+        tried.append((x, y))
+        del _bad_spots[:-40]
+        print(f"  [버리기] 안 놓임 → 그 자리는 빼고 다른 빈 자리로 ({fails}/{DROP_TRIES})")
         if fails >= DROP_TRIES:
-            print(f"[문제] 완성품을 {DROP_TRIES}번 끌어다 놓아도 안 버려짐"
-                  " — 버릴 자리(measure_cook_cycle.py 4번) / py cook_test.py 로 확인")
+            # 자리를 바꿔도 계속 안 되면 자리 문제가 아닐 수 있음 → 이번에 뺀 자리들은 다시 쓸 수 있게 돌려놓음
+            _bad_spots[:] = [b for b in _bad_spots if b not in tried]
+            print(f"[문제] 완성품을 빈 자리 {DROP_TRIES}곳에 끌어다 놓아도 안 버려짐"
+                  " — py cook_test.py 8번(빈 바닥 그림) / 0번(하나 버려보기) 으로 확인")
             return False
     if n_drop or retries:
-        print(f"[버리기] 완성품 {n_drop}칸 버림" + (f" (다시 한 것 {retries}번)" if retries else ""))
+        print(f"[버리기] 완성품 {n_drop}칸 버림" + (f" (안 놓여서 자리 바꾼 것 {retries}번)" if retries else ""))
     ac._scan_cache = None                   # 칸 배치가 바뀌었으니 요리 봇이 새로 스캔하게
     am._scan_cache = None
     return True

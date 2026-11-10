@@ -8,7 +8,7 @@
   1. 아래 메뉴 [아이템] 아이콘
   2. 아이템 창 칸 (첫 칸 / 첫 줄 맨 오른쪽 / 5번째 줄 첫 칸)
   3. 바닥 재료 무더기 그림 (레시피 재료마다)
-  4. 완성품을 버릴 바닥 빈 자리 (재료 무더기와 떨어진 곳)
+  4. 완성품을 버릴 곳 — 사방이 빈 바닥인 곳 (바닥 색을 기억해서, 이 근처부터 빈 바닥을 찾아 내려놓음)
   5. 아이템 창의 완성품 20개 꽉 찬 칸 (왼쪽 위 숫자 20 그림 — 20개 칸만 버릴 때)
 
 ■ 준비: 게임 화면에 제작 창을 띄우고, 바닥에 재료 무더기를 하나씩 떨어뜨려 두기
@@ -86,7 +86,8 @@ def build_steps(names, fulls):
     first_spr = len(steps)
     steps += [("spr_" + n, "box", f"바닥의 {n} 무더기 하나 (안 가려진 것)") for n in names]
     drop = len(steps)
-    steps.append(("drop_spot", "main", "완성품을 버릴 바닥 빈 자리 — 재료 무더기와 떨어진 곳 (창이 안 덮는 바닥)"))
+    steps.append(("drop_spot", "main", "완성품을 버릴 곳 — 사방이 빈 바닥인 곳 한가운데 (재료 무더기와 떨어진 곳, 창이 안 덮는 바닥)\n"
+                                       "   ※ 여기 바닥 색을 기억해 두고, 이 근처부터 빈 바닥을 찾아서 내려놓음"))
     groups = [
         ("아래 메뉴 [아이템] 아이콘", [0, 1], []),
         ("아이템 창 칸", [2, 3, 4, 5], ["item"]),
@@ -140,6 +141,25 @@ def grab_full(data, x, y):
         shot = sct.grab({"left": cx - half, "top": cy - half, "width": half * 2, "height": half * 2})
     img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
     return img, (cx, cy), (row, col)
+
+
+def floor_color(x, y, half=22, hole=8, tol=28):
+    """(x, y) 주변 빈 바닥의 색 [R, G, B] — 봇이 방에서 '빈 바닥'을 찾을 때 기준으로 씀.
+
+    커서 바로 밑(가운데)은 빼고 그 둘레를 봄. 둘레의 90% 이상이 비슷한 색이어야 빈 바닥으로 인정
+    (물건이 섞여 있으면 None → 다시 찍게 함).
+    """
+    import numpy as np
+    with mss.mss() as sct:
+        shot = sct.grab({"left": x - half, "top": y - half, "width": half * 2 + 1, "height": half * 2 + 1})
+    img = np.asarray(shot)[:, :, :3][:, :, ::-1].astype(int)          # RGB
+    yy, xx = np.mgrid[-half:half + 1, -half:half + 1]
+    ring = img[np.maximum(np.abs(yy), np.abs(xx)) > hole]
+    med = np.median(ring, axis=0)
+    same = (np.abs(ring - med).max(axis=1) <= tol).mean()
+    if same < 0.9:
+        return None
+    return [int(round(v)) for v in med]
 
 
 def choose(steps, groups):
@@ -266,14 +286,24 @@ def main():
             if not (mw.left <= x < mw.left + mw.width and mw.top <= y < mw.top + mw.height):
                 print("   [다시] 게임 창 밖이에요")
                 continue
+            floor = None
             if name == "drop_spot":
                 over = mr.top_window_at(x, y)
                 if over is not None and "조이톡" not in str(over.title):
                     print(f"   [다시] 거기는 '{over.title}' 창 위예요. 창이 안 덮는 바닥을 골라주세요")
                     continue
+                floor = floor_color(x, y)
+                if floor is None:
+                    print("   [다시] 그 주변에 물건이나 다른 그림이 섞여 있어요."
+                          " 사방이 빈 바닥인 곳 한가운데에서 다시 F1")
+                    continue
             data["points"][name] = {"dx_left": x - mw.left, "dx_right": mw.left + mw.width - x,
                                     "dy_top": y - mw.top, "dy_bottom": mw.top + mw.height - y, "x": x, "y": y}
-            print(f"   기록: ({x}, {y})")
+            if floor is not None:
+                data["points"][name]["floor_rgb"] = floor
+                print(f"   기록: ({x}, {y})  / 빈 바닥 색 {tuple(floor)}")
+            else:
+                print(f"   기록: ({x}, {y})")
             i += 1
             continue
         # win: 아이템 창 안

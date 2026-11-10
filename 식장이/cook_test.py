@@ -15,8 +15,8 @@ cook_cycle.py 의 설정 / 측정값을 그대로 씀. 어느 구간이 잘 안 
    0. 완성품 칸 아무거나 하나 버리기 (20개가 아니어도 — 끌어다 놓기가 되는지 시험. 버린 건 눌러서 다시 주우면 됨)
    --- 클릭 안 하는 확인 ---
    7. 아이템 창 읽기 (칸마다 이름 / 20개 여부)  ※ 아이템 창이 닫혀 있으면 여는 것만
-   8. 바닥 재료 찾기 (찾은 개수 / 일치 점수, floor_debug.png 저장)
-   9. 버릴 자리로 마우스만 옮기기
+   8. 바닥 재료 / 빈 바닥 찾기 (찾은 개수, 빈 바닥과 내려놓을 자리를 floor_debug.png 로 저장)
+   9. 지금 내려놓을 빈 자리로 마우스만 옮기기
 """
 
 import os
@@ -42,8 +42,8 @@ MENU = """
  0. 완성품 칸 아무거나 하나 버리기 (20개 아니어도 — 끌어다 놓기 시험)
  --- 클릭 안 하는 확인 ---
  7. 아이템 창 읽기 (칸마다 이름 / 20개 여부)
- 8. 바닥 재료 찾기 (floor_debug.png 저장)
- 9. 버릴 자리로 마우스만 옮기기
+ 8. 바닥 재료 / 빈 바닥 찾기 (floor_debug.png 저장)
+ 9. 지금 내려놓을 빈 자리로 마우스만 옮기기
  그냥 엔터 = 끝          (시험 중 F9 = 중단)
 ------------------------------------------------------------"""
 
@@ -155,12 +155,12 @@ def t_read(sct):
 def t_floor(sct):
     import numpy as np
     from PIL import Image
+    import cv2
     w = rc.main_win()
     if w is None:
         print("\n결과: 게임 창을 못 찾음")
         return False
     img = rc.shot_bgr(sct, w.left, w.top, w.width, w.height)
-    import cv2
     ok = True
     print()
     for name in rc.PILES:
@@ -170,24 +170,39 @@ def t_floor(sct):
         ok = ok and bool(found)
         for x, y, s in found:
             cv2.circle(img, (int(x - w.left), int(y - w.top)), 14, (0, 0, 255), 2)
-            cv2.putText(img, name[:1], (int(x - w.left) - 6, int(y - w.top) - 18),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+    # 빈 바닥: 봇이 '빈 바닥'으로 보는 곳만 밝게, 나머지는 어둡게
     try:
+        m, _ = cc.floor_mask(sct)
+        img[m == 0] = (img[m == 0] * 0.35).astype(np.uint8)
+        spots = cc.empty_spots(sct, count=12)
+        for i, (x, y, room) in enumerate(spots):
+            p = (int(x - w.left), int(y - w.top))
+            cv2.circle(img, p, 4, (0, 255, 255), -1)
+            cv2.putText(img, str(i + 1), (p[0] + 6, p[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
         x, y = rc.main_pt("drop_spot")
-        cv2.drawMarker(img, (int(x - w.left), int(y - w.top)), (0, 255, 255), cv2.MARKER_CROSS, 30, 2)
-    except Exception:
-        pass
+        cv2.drawMarker(img, (int(x - w.left), int(y - w.top)), (0, 0, 255), cv2.MARKER_CROSS, 26, 2)
+        print(f"   빈 바닥: 화면의 {m.mean() * 100:.0f}%  / 내려놓을 자리 후보 {len(spots)}곳"
+              + (f" (첫 자리 ({spots[0][0]}, {spots[0][1]}), 주변 여유 {spots[0][2]:.0f}px)" if spots else "  ← 못 찾음"))
+        ok = ok and bool(spots)
+    except Exception as e:
+        print("   빈 바닥 찾기 오류:", e)
+        ok = False
     path = os.path.join(HERE, "floor_debug.png")
     Image.fromarray(np.ascontiguousarray(img[:, :, ::-1])).save(path)
-    print(f"   그림 저장: {path}  (빨간 동그라미 = 찾은 무더기, 노란 + = 버릴 자리)")
+    print(f"   그림 저장: {path}")
+    print("     밝은 곳 = 봇이 보는 빈 바닥 / 빨간 동그라미 = 찾은 재료 무더기")
+    print("     노란 점 1, 2, 3… = 내려놓을 순서 / 빨간 + = 측정 때 찍은 버릴 곳")
     return ok
 
 
 def t_spot(sct):
-    x, y = rc.main_pt("drop_spot")
+    spots = cc.empty_spots(sct)
+    if not spots:
+        print("\n결과: 내려놓을 빈 바닥을 못 찾음 (8번 그림으로 확인)")
+        return False
+    x, y, room = spots[0]
     am.smooth_move_to(x, y, 0.4, bow=6)
-    print(f"\n결과: 마우스를 버릴 자리 ({x}, {y}) 로 옮김 — 방 바닥 빈 곳인지 눈으로 확인"
-          f"  (매번 좌우 {cc.DROP_SPREAD[0]} / 위아래 {cc.DROP_SPREAD[1]}px 안에서 조금씩 다르게 놓음)")
+    print(f"\n결과: 마우스를 지금 내려놓을 자리 ({x}, {y}) 로 옮김 (주변 여유 {room:.0f}px) — 빈 바닥인지 눈으로 확인")
     return True
 
 
@@ -200,8 +215,8 @@ TESTS = {
     "6": ("한 바퀴 전체", t_cycle),
     "0": ("완성품 칸 아무거나 하나 버리기 (끌어다 놓기 시험)", t_drop_any),
     "7": ("아이템 창 읽기", t_read),
-    "8": ("바닥 재료 찾기", t_floor),
-    "9": ("버릴 자리로 마우스만", t_spot),
+    "8": ("바닥 재료 / 빈 바닥 찾기", t_floor),
+    "9": ("내려놓을 빈 자리로 마우스만", t_spot),
 }
 
 
