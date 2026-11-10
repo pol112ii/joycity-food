@@ -332,6 +332,9 @@ def main():
         print("   20개 칸 숫자 그림이 맞게 찍혔는지:  py cook_cycle.py 숫자  (버리지 않고 칸마다 확인만)")
     elif full_names():
         print("   20개 칸 숫자 그림: 아직 없음 — 20개 꽉 찬 칸이 생기면  py measure_cook_cycle.py → 5번")
+    # 측정값에는 있는데 그림 파일이 없는 것(예전에 쟀다가 지운 것)은 정리
+    data["sprites"] = {k: v for k, v in data["sprites"].items()
+                       if os.path.exists(os.path.join(mr.SPRITE_DIR, v["file"]))}
     data["saved_at"] = time.strftime("%Y-%m-%d %H:%M")
     tmp = mr.OUT + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

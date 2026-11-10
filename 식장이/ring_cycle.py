@@ -129,9 +129,18 @@ def load():
     _sprites = {}
     for key, v in _layout["sprites"].items():
         # (cv2.imread 는 한글 폴더 경로를 못 읽어서 PIL 로 읽음)
-        img = cv2.cvtColor(np.array(Image.open(os.path.join(SPRITE_DIR, v["file"]))
-                                    .convert("RGB")), cv2.COLOR_RGB2BGR)
+        try:
+            img = cv2.cvtColor(np.array(Image.open(os.path.join(SPRITE_DIR, v["file"]))
+                                        .convert("RGB")), cv2.COLOR_RGB2BGR)
+        except OSError:
+            # 측정값에는 적혀 있는데 그림 파일이 없음 (예전에 쟀다가 이름을 바꾸거나 지운 것) → 건너뜀
+            print(f"  (ring_sprites/{v['file']} 파일이 없어서 건너뜀 — 예전에 잰 그림)")
+            continue
         _sprites[key] = img
+    missing = [n for n in PILES if "spr_" + n not in _sprites]
+    if missing:
+        print(f"[중단] 바닥 무더기 그림이 없어요: {', '.join(missing)} — 측정 도구에서 '바닥 무더기 그림'을 다시 재세요")
+        return False
     return True
 
 
