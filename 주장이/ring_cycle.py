@@ -1047,6 +1047,9 @@ def _on_pile(x, y, boxes):
     return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in boxes)
 
 
+_last_aim = [None]              # chase_click 이 실제로 누른 몸통 자리 (재료를 피해 다른 자리를 눌렀는지 보려고)
+
+
 def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=(), alts=()):
     """걸어 다니는 리어카맨을 따라가서 누름 → (누른 x, y, 리어카맨 위치) 또는 None(놓침).
 
@@ -1114,6 +1117,7 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=(), alts=
         mx, my = pyautogui.position()
         if o is not None and abs(mx - cx) <= tol and abs(my - cy) <= tol and jerk <= tol \
                 and not _on_pile(mx, my, avoid):
+            _last_aim[0] = tuple(aim[0])
             pyautogui.mouseDown()
             time.sleep(random.uniform(0.04, 0.07))
             pyautogui.mouseUp()
@@ -1158,6 +1162,52 @@ def cart_click(sct, cart, body, extra, tol, avoid, alts):
 
 _cart_log = {"sells": 0, "clicks": 0, "first": 0}
 
+# 리어카맨을 누르는 자리 후보 — (가로, 세로) x '이름 글자 → 측정한 몸통' 거리.
+#   0: 측정한 자리   1: 그보다 아래   2: 더 아래   3: 조금 위
+# 리어카맨을 잴 때 머리(모자) 쪽에서 F1 을 누르면 누르는 자리가 그림 가장자리에 걸려서 잘 안 열림.
+# 그래서 측정한 자리 근처를 세 번 눌러도 안 열리면 다른 자리도 눌러 보고,
+# 자리마다 열린 횟수를 cart_spot.json 에 적어 뒀다가 다음부터는 잘 열리던 자리를 먼저 누름.
+CART_SPOTS = ((0.0, 0.0), (0.0, 0.5), (0.0, 1.0), (0.0, -0.35))
+SPOT_NAMES = ("측정한 자리", "조금 아래", "더 아래", "조금 위")
+_spot_stat = None
+
+
+def load_spots():
+    """자리별 성적 (cart_spot.json). 리어카맨을 다시 재서 거리가 바뀌었으면 새로 시작."""
+    global _spot_stat
+    off = _layout["points"]["cart_body"]
+    key = [round(float(off["off_x"]), 1), round(float(off["off_y"]), 1)]
+    st = None
+    try:
+        with open(os.path.join(HERE, "cart_spot.json"), encoding="utf-8") as f:
+            st = json.load(f)
+        if st.get("off") != key or any(len(st.get(k, [])) != len(CART_SPOTS) for k in ("win", "try")):
+            st = None
+    except Exception:
+        st = None
+    _spot_stat = st or {"off": key, "win": [0] * len(CART_SPOTS), "try": [0] * len(CART_SPOTS)}
+    return _spot_stat
+
+
+def spot_order():
+    """누를 자리 순서 — 잘 열리던 자리부터 (기록이 없으면 측정한 자리부터)."""
+    st = _spot_stat or load_spots()
+    return sorted(range(len(CART_SPOTS)), key=lambda i: (-(st["win"][i] + 1.0) / (st["try"][i] + 2.0), i))
+
+
+def note_spot(i, opened):
+    st = _spot_stat or load_spots()
+    st["try"][i] += 1
+    st["win"][i] += int(opened)
+    if st["try"][i] > 40:                   # 오래된 기록은 반으로 줄임 (화면 크기가 바뀌어도 다시 배우게)
+        st["try"][i] //= 2
+        st["win"][i] //= 2
+    try:
+        with open(os.path.join(HERE, "cart_spot.json"), "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
+
 
 def log_cart(tried, opened):
     """리어카맨을 몇 번 눌러서 열렸는지 기록 (Alt 켬/끔 비교용 — cart_log.txt)."""
@@ -1200,6 +1250,13 @@ def cart_report():
             print(f"   {name}: {n}번 — 첫 클릭에 열림 {f1}번 ({f1 * 100 // n}%), 평균 {c / n:.1f}번 클릭, 끝내 안 열림 {bad}번")
         else:
             print(f"   {name}: 기록 없음")
+    try:
+        st = load_spots()
+        if sum(st["try"]):
+            print("   누른 자리별 (열림/누름): " + " · ".join(
+                f"{SPOT_NAMES[i]} {st['win'][i]}/{st['try'][i]}" for i in range(len(CART_SPOTS))))
+    except Exception:
+        pass
 
 
 def pick_sell_target():
@@ -1244,16 +1301,24 @@ def sell_all(sct):
 
     # 몸통 주변을 조금씩 다르게 눌러봄 (가운데 → 조금 위 → 조금 아래). 몸통 크기에 맞춰 비율로
     dy = abs(off["off_y"]) * k
-    spots = [(0, 0), (0, -int(0.18 * dy)), (int(0.1 * dy), int(0.18 * dy))]
+    near = [(0, 0), (0, -int(0.18 * dy)), (int(0.1 * dy), int(0.18 * dy))]
     # 바닥 재료 무더기 위에 겹쳤을 때 대신 누를 몸통 자리 (위쪽/좌우)
-    alts = spots + [(-int(0.15 * dy), -int(0.08 * dy)), (int(0.15 * dy), -int(0.08 * dy)), (0, -int(0.3 * dy))]
+    alts = near + [(-int(0.15 * dy), -int(0.08 * dy)), (int(0.15 * dy), -int(0.08 * dy)), (0, -int(0.3 * dy))]
+    # '가장 잘 열리던 자리' 근처를 눌러 보고, 세 번 눌러도 안 열리면 그때부터 다른 자리들을 차례로 (CART_SPOTS)
+    order = spot_order()
+    bx, by = (int(v * dy) for v in CART_SPOTS[order[0]])
+    first = [(order[0], (bx + nx, by + ny)) for nx, ny in near]
+    rest = [(i, (int(CART_SPOTS[i][0] * dy), int(CART_SPOTS[i][1] * dy))) for i in order[1:]] + first[:1]
+    if order[0] != 0:
+        print(f"  (리어카맨: 측정한 자리보다 '{SPOT_NAMES[order[0]]}'가 더 잘 열려서 그 자리부터 누름)")
     tol = max(5, int(0.12 * dy))              # 커서가 몸통에서 이만큼 안이면 누름
     clicks = []                               # 이번 리어카맨을 누른 자리 (안 움직이는지 보려고)
     tried = 0                                 # 이번에 리어카맨을 누른 횟수 (기록용)
     opened = False
     avoid += pile_boxes(sct)                  # 바닥 재료 위에서는 누르지 않음 (주워버리니까)
+    base_fail = 0                             # 잘 열리던 자리를 눌렀는데 안 열린 횟수 (이번 팔기에서)
     for attempt in range(5):
-        for sx, sy in spots:
+        for si, (sx, sy) in (first if base_fail < 3 else rest):
             res = cart_click(sct, cart, body, (sx, sy), tol, avoid, alts)
             if res is None:
                 # 놓침 → 화면 전체에서 다시 찾음 (방금 보던 곳에서 가까운 것)
@@ -1266,10 +1331,13 @@ def sell_all(sct):
             tx, ty, cart = res
             clicks.append(cart[:2])
             tried += 1
-            print(f"  리어카맨 클릭 → ({tx}, {ty})  (이름 일치 {cart[2]:.2f})")
-            if wait_title("sell", True, CART_OPEN_WAIT):
-                opened = True
+            print(f"  리어카맨 클릭 → ({tx}, {ty})  (이름 일치 {cart[2]:.2f} · {SPOT_NAMES[si]})")
+            opened = wait_title("sell", True, CART_OPEN_WAIT)
+            if _last_aim[0] == (sx, sy) and (opened or (running and alive)):
+                note_spot(si, opened)         # 노린 자리를 그대로 눌렀을 때만 적음 (재료를 피해 다른 데를 눌렀으면 안 적음)
+            if opened:
                 break
+            base_fail += int(si == order[0])
         if opened:
             break
         fails += 1

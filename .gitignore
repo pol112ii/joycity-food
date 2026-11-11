@@ -27,3 +27,6 @@ __pycache__/
 주장이/cart_log.txt
 의장이/cart_log.txt
 식장이/cart_log.txt
+주장이/cart_spot.json
+의장이/cart_spot.json
+식장이/cart_spot.json
