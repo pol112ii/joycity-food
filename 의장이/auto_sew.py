@@ -4,7 +4,7 @@
 
 ■ 게임 (영상으로 확인한 것)
   - 회색 천에 세로 칸이 5개. 칸마다 노란 띠(왼박음) 자리와 파란 띠(오른박음) 자리가 있음
-  - 띠는 위에서 일정한 간격(0.4~0.5초)마다 한 줄씩 내려옴 — 간격은 봇이 화면으로 잼
+  - 띠는 위에서 일정한 간격(만드는 옷에 따라 0.25~0.5초)마다 한 줄씩 내려옴 — 간격은 봇이 화면으로 잼
   - 바늘 두 개는 마우스 좌우 위치를 따라 칸 단위로 움직임
   - 띠가 빨간 실선(바늘)에 걸쳐 있는 동안 그 색 키를 누르고 있으면 점수가 오름
   - 띠가 없는데 누르고 있으면 빨간 실이 나오고 점수가 깎임
@@ -98,6 +98,7 @@ HIT_ROW = 21                        # 띠가 위에서 21번 줄(0부터)에 있
 SEE_ROWS = 18                       # 0~17번 줄만 봄 (그 아래는 바늘에 가려질 수 있음)
 NCOL = 10                           # 띠 자리 10개 (칸 k: 노랑 2k, 파랑 2k+1)
 OFF = 700                           # 줄 기억 배열에서 0번의 위치
+NEAR_TICKS = 24                     # 빨간 실이 이 틱 수 안에 두 번 나야 박음질 줄을 한 칸 옮김 (한 번은 우연일 수 있음)
 
 
 # ==================== 공통 ====================
@@ -503,14 +504,17 @@ class Tracker:
             self.k0 += 1
             self.events.append((self.k0, lo, hi))
             if self.P_known:
-                if hi - lo < 0.3:
+                if hi - lo < min(0.3, 0.45 * self.P):
                     self._fit()                      # 지난 판 간격으로 바로 시각을 맞춤
                 return
             mids = [(e[1] + e[2]) / 2 for e in self.events if e[2] - e[1] < 0.3]
-            ds = [b - a for a, b in zip(mids, mids[1:]) if 0.25 <= b - a <= 0.75]
+            ds = [b - a for a, b in zip(mids, mids[1:]) if 0.12 <= b - a <= 0.9]
             if len(ds) >= 3:
-                self.P = float(np.median(ds))
-                self._fit()
+                med = float(np.median(ds))
+                ds = [d for d in ds if abs(d - med) <= 0.2 * med]     # 틱을 하나 놓쳐서 두 배로 잰 것은 뺌
+                if len(ds) >= 3:
+                    self.P = float(np.mean(ds))
+                    self._fit()
             return
         else:
             x = (mid - self.phi) / self.P
@@ -572,17 +576,19 @@ class Tracker:
         self.cells[:, a0:a0 + SEE_ROWS] = new
         self.integrated += 1
 
-    def present(self, i, k):
-        """띠 자리 i 가 틱 k 구간에 박음질 중인지.
+    def present(self, i, k, A=None, D=None):
+        """띠 자리 i 가 틱 k 구간에 박음질 중인지. (A, D 를 주면 그 줄로 계산 — 줄 시험용)
 
         D <= A : A~D 줄 사이 칸이 전부 띠  (A == D 면 그 한 줄)
         D >  A : A~D 줄 사이에 띠가 하나라도
         """
-        lo, hi = min(self.A, self.D) - k + OFF, max(self.A, self.D) - k + OFF
+        A = self.A if A is None else A
+        D = self.D if D is None else D
+        lo, hi = min(A, D) - k + OFF, max(A, D) - k + OFF
         if lo < 0 or hi >= self.cells.shape[1]:
             return False
         seg = self.cells[i, lo:hi + 1] == 1
-        return bool(seg.all() if self.D <= self.A else seg.any())
+        return bool(seg.all() if D <= A else seg.any())
 
     def gains(self, k, horizon):
         """칸별·구간별 박을 수 있는 띠 수 (5 x horizon)."""
@@ -688,7 +694,8 @@ def wait_until(t):
 # 판이 바뀌어도 기억하는 값 (한 번 맞춘 박음질 줄 / 키 반응 시간은 다음 판에도 씀)
 # 프로그램을 껐다 켜도 이어 쓰도록 sew_learn.json 에 저장함
 LEARN_FILE = os.path.join(HERE, "sew_learn.json")
-_learned = {"dA": 0, "dD": 0, "lat": [], "rb": None, "P": None, "geo": None}
+_learned = {"dA": 0, "dD": 0, "lat": [], "rb": None, "P": None, "geo": None,
+            "pf": 0, "pw": 0}      # pf/pw: 줄 시험이 연달아 안 된 횟수 / 다음 시험까지 건너뛸 띠 수
 _dumped = [0]
 _win_seen = [None]          # 시작을 누른 뒤 의장이 창이 처음 보인 시각
 _last_pt = [None]           # 지난 판에 마우스를 둔 자리 (다음 판 시작 누르자마자 그리로)
@@ -701,11 +708,14 @@ def load_learned():
             d = json.load(f)
         if d.get("lat") is not None:
             _learned["lat"] = [float(d["lat"])] * 3
-        _learned["dA"] = int(d.get("dA2", 0))
-        _learned["dD"] = int(d.get("dD2", 0))
+        # (예전 dA2/dD2 는 안 읽음 — 빨간 실 두 번이면 줄을 옮기고 되돌리지 못하던 때의 값이라 새로 시작)
+        _learned["dA"] = min(2, max(-2, int(d.get("dA3", 0))))
+        _learned["dD"] = min(_learned["dA"], max(-2, int(d.get("dD3", 0))))
+        _learned["pf"] = min(6, max(0, int(d.get("pf", 0))))
+        _learned["pw"] = max(0, int(d.get("pw", 0)))
         if d.get("rb"):
             _learned["rb"] = float(d["rb"])
-        if d.get("P") and 0.25 <= float(d["P"]) <= 0.75:
+        if d.get("P") and 0.12 <= float(d["P"]) <= 0.9:
             _learned["P"] = float(d["P"])
         if d.get("geo"):
             _learned["geo"] = d["geo"]
@@ -720,8 +730,8 @@ def save_learned():
         import json
         lat = float(np.median(_learned["lat"])) if _learned["lat"] else None
         with open(LEARN_FILE, "w", encoding="utf-8") as f:
-            json.dump({"lat": lat, "dA2": _learned["dA"], "dD2": _learned["dD"], "rb": _learned["rb"],
-                       "P": _learned["P"], "geo": _learned["geo"]}, f)
+            json.dump({"lat": lat, "dA3": _learned["dA"], "dD3": _learned["dD"], "rb": _learned["rb"],
+                       "P": _learned["P"], "geo": _learned["geo"], "pf": _learned["pf"], "pw": _learned["pw"]}, f)
     except Exception:
         pass
 
@@ -752,7 +762,14 @@ class Sewing:
         self.lane = None
         self.target = 2
         self.last_k = None
-        self.ev_start = self.ev_end = 0       # 누를 때 / 뗄 때 빨간 실 횟수 (보정용)
+        self.pen_k = {"A": None, "D": None}   # 누를 때(A) / 뗄 때(D) 마지막으로 빨간 실이 난 틱 (줄 보정용)
+        self.fix_k = {"A": None, "D": None}   # 시험해서 줄을 되돌린 틱
+        self.probe = None                     # 지금 시험 중인 띠 (한 줄 넓혀서 눌러 보는 중)
+        self.probe_edge = "A"                 # 다음에 시험할 쪽: A = 한 줄 일찍 누르기, D = 한 줄 더 누르기
+        self.probe_ok = 0                     # 연달아 성공한 횟수 (두 번이면 줄을 바꿈)
+        self.probe_bad = set()                # 이번에 시험해서 안 된 쪽
+        self.probe_none = 0                   # 결과를 못 본 횟수
+        self.probe_wait = _learned["pw"]      # 다음 시험까지 건너뛸 띠 수
         self.iv = None                        # 한 버튼만 눌린 동안의 점수 기록 (화면 시각)
         self.stuck = 0
         self.ends = []                        # 띠 끝에서 뗀 뒤 점수 변화
@@ -962,8 +979,9 @@ class Sewing:
         if k == self.st_k or not 0.35 <= frac <= 0.8:
             return
         self.st_k = k
+        lo, hi = min(self.trk.A, self.trk.D), max(self.trk.A, self.trk.D)
         for i in range(NCOL):
-            if self.trk.present(i, k):
+            if self.trk.present(i, k, lo, hi):        # 시작 줄 ~ 끝 줄 어디든 띠가 걸쳐 있던 틱 (한 줄 덜 박으면 숫자로 보임)
                 ln = i // 2
                 self.st_tot[ln] += 1
                 if self.t_strip is None:
@@ -1015,7 +1033,9 @@ class Sewing:
                            for i in range(NCOL))
             self.dump_log.append(f"  TICK k={k} 화면줄0~17=" + "|".join("".join("#" if v else "." for v in occ[i])
                                                                     for i in range(NCOL))
-                                 + f"  기억줄12~24={mem}  계획={self.path[:6]}  A={trk.A} D={trk.D} P={trk.P:.4f}")
+                                 + f"  기억줄12~24={mem}  계획={self.path[:6]}  A={trk.A} D={trk.D} P={trk.P:.4f}"
+                                 + ("" if self.probe is None else
+                                    f"  시험={self.probe['edge']}{self.probe['i']}@{self.probe['k']}:{self.probe['res']}"))
         except Exception as e:
             print(f"  (분석용 기록 중지: {e})")
             self.dump = False
@@ -1107,18 +1127,137 @@ class Sewing:
         last = not trk.present(i, kv + 1)
         if first == last:
             return                                  # 한 칸짜리이거나 중간 → 어느 끝인지 모름
-        if last:
-            self.ev_end += 1
-            if self.ev_end >= 2 and trk.D > self.hit0 - 2:
-                trk.D -= 1
-                self.ev_end = 0
-                print("  [보정] 띠가 끝나는 걸 한 칸 일찍 보도록 맞춤 (뗄 때 빨간 실이 나와서)")
+        e = "D" if last else "A"
+        prev, self.pen_k[e] = self.pen_k[e], kv
+        if prev is None or kv - prev > NEAR_TICKS:
+            return                                  # 한 번뿐이면 그때만 타이밍이 어긋난 것일 수 있음 → 줄은 그대로
+        if e == "D" and trk.D > self.hit0 - 2:
+            trk.D -= 1
+            print(f"  [보정] 뗄 때 빨간 실이 연달아 나와서 한 줄 일찍 떼도록 맞춤 → 끝 줄 {trk.D}")
+        elif e == "A" and trk.A < self.hit0 + 2:
+            trk.A += 1
+            print(f"  [보정] 누를 때 빨간 실이 연달아 나와서 한 줄 늦게 누르도록 맞춤 → 시작 줄 {trk.A}")
         else:
-            self.ev_start += 1
-            if self.ev_start >= 2 and trk.A < self.hit0 + 2:
-                trk.A += 1
-                self.ev_start = 0
-                print("  [보정] 띠가 시작하는 걸 한 칸 늦게 보도록 맞춤 (누를 때 빨간 실이 나와서)")
+            return
+        self.pen_k[e] = None
+        # 줄을 옮겼으면 띠마다 한 줄씩 덜 박게 됨 → 조금 뒤에 반대쪽 끝부터 시험해서 맞는 줄을 찾음
+        self.probe = None
+        self.probe_ok = 0
+        self.probe_bad = set()
+        self.probe_edge = "A" if e == "D" else "D"
+        self.probe_wait = max(self.probe_wait, 2)
+        if self.fix_k[e] is not None and kv - self.fix_k[e] < 12 * NEAR_TICKS:
+            # 시험으로 되돌린 지 얼마 안 돼 또 빨간 실 → 되돌린 게 틀렸던 것. 다음 시험은 한참 뒤에
+            _learned["pf"] = min(6, _learned["pf"] + 1)
+            self.probe_wait = 6 * 2 ** _learned["pf"]
+
+    # ---------- 박음질 줄 시험 (한 줄 덜 박고 있을 때 스스로 되돌리기) ----------
+    def edges(self, i):
+        """띠 자리 i 에 지금 쓸 (시작 줄, 끝 줄). 시험 중인 띠는 한 줄 넓혀서 봄."""
+        A, D = self.trk.A, self.trk.D
+        pr = self.probe
+        if pr is not None and pr["i"] == i:
+            if pr["edge"] == "A":
+                A -= 1
+            else:
+                D += 1
+        return A, D
+
+    def probe_begin(self, lane, k, T_cur, now):
+        """시작 줄이 끝 줄보다 아래면 띠마다 한 줄씩 덜 박는 중 → 한 줄 넓혀서 눌러 볼 띠를 고름.
+
+        A : 띠 앞끝이 시작 줄 바로 윗줄에 닿은 틱부터 눌러 봄 (한 줄 일찍)
+        D : 띠 뒤끝이 끝 줄을 지나간 다음 틱까지 누르고 있어 봄 (한 줄 더)
+        그 틱 안에 점수가 오르면 성공(check_probe), 깎이면 실패(check_penalty).
+        """
+        trk = self.trk
+        A, D = trk.A, trk.D
+        if (self.probe is not None or A <= D or self.probe_wait > 0 or self.probe_none >= 12
+                or self.sc is None or len(self.lat) < 2):
+            return
+        e = self.probe_edge
+        for c, key in ((0, LEFT_KEY), (1, RIGHT_KEY)):
+            i, j = 2 * lane + c, 2 * lane + 1 - c
+            if e == "A":
+                kp = k
+                if not (trk.present(i, k, A - 1, D) and not trk.present(i, k - 1, A - 1, D)
+                        and not trk.present(i, k, A, D) and now <= T_cur + 0.3 * trk.P
+                        and self.keys.down[key] is None):
+                    continue
+            else:
+                kp = k + 1
+                if not (trk.present(i, k, A, D) and not trk.present(i, k + 1, A, D)
+                        and trk.present(i, k + 1, A, D + 1) and self.keys.down[key] is not None):
+                    continue
+            # 같은 칸의 다른 색 띠가 바늘 근처에 있으면 누구 점수인지 알 수 없음 → 다음 띠에서
+            lo = D - 2 - kp + OFF
+            if lo < 0 or (trk.cells[j, lo:A + 3 - kp + OFF] == 1).any():
+                continue
+            k1 = kp
+            while e == "A" and k1 - kp < 40 and trk.present(i, k1 + 1, A - 1, D):
+                k1 += 1                             # 이 띠가 바늘을 다 지나가는 틱
+            self.probe = {"edge": e, "i": i, "k": kp, "k1": k1, "s0": self.sc, "frozen": False,
+                          "res": None, "mix": False}
+            return
+
+    def check_probe(self):
+        """시험 누름의 결과: 그 틱 안에 점수가 오르면 성공. (깎이면 check_penalty 가 실패로 처리)"""
+        pr = self.probe
+        if pr is None or pr["res"] is not None:
+            return
+        trk, tf = self.trk, self.tf
+        Tv0 = trk.phi + pr["k"] * trk.P               # 시험 틱이 화면에 보이는 때
+        Tv1 = Tv0 + trk.P
+        c = pr["i"] % 2
+        if self.keys.down[(RIGHT_KEY, LEFT_KEY)[c]] is not None or self.btn[1 - c]:
+            pr["mix"] = True                          # 다른 색 키도 눌려 있음 → 누구 점수인지 모름
+        if self.sc is not None and tf <= Tv1 - 0.03:
+            if not pr["frozen"]:
+                pr["s0"] = self.sc                    # 기준 점수 (A: 누르기 직전, D: 시험 틱이 화면에 보인 직후)
+                if pr["edge"] == "D" and tf >= Tv0 + 0.03:
+                    pr["frozen"] = True
+            elif self.sc - pr["s0"] >= 0.6 and not pr["mix"]:
+                self.probe_result(True)
+        elif tf > Tv1 - 0.03:
+            self.probe_result(None)
+
+    def probe_result(self, res):
+        pr, trk = self.probe, self.trk
+        e = pr["edge"]
+        if res is None:                               # 점수 변화를 못 봄 → 이 띠는 넘어가고 다음에 다시
+            pr["res"] = "?"
+            if pr["frozen"]:
+                self.probe_none += 1
+                if self.probe_none % 3 == 0:
+                    self.probe_edge = "D" if e == "A" else "A"
+            return
+        if res:
+            pr["res"] = True                          # 이 띠가 다 지나갈 때까지는 넓힌 줄 그대로 누름
+            self.probe_ok += 1
+            if self.probe_ok < 2:
+                return                                # 한 번 더 확인하고 바꿈
+            if e == "A":
+                trk.A -= 1
+                print(f"  [보정] 한 줄 일찍 눌러도 점수가 올라서 시작 줄을 앞당김 → 시작 줄 {trk.A}")
+            else:
+                trk.D += 1
+                print(f"  [보정] 한 줄 더 누르고 있어도 점수가 올라서 끝 줄을 늦춤 → 끝 줄 {trk.D}")
+            self.fix_k[e] = pr["k"]
+            self.pen_k[e] = None
+            self.probe = None
+            self.probe_ok = 0
+            self.probe_bad = set()
+            _learned["pf"] = 0
+            return
+        self.probe = None                             # 빨간 실 → 그쪽 줄은 지금이 맞음
+        self.probe_ok = 0
+        self.probe_bad.add(e)
+        self.probe_edge = "D" if e == "A" else "A"
+        if len(self.probe_bad) >= 2:
+            # 양쪽 다 안 됨 → 한동안 그대로 쓰고, 다음 시험은 점점 드물게
+            self.probe_bad = set()
+            _learned["pf"] = min(6, _learned["pf"] + 1)
+            self.probe_wait = 6 * 2 ** _learned["pf"]
 
     def new_interval(self, k):
         iv = self.iv
@@ -1157,6 +1296,9 @@ class Sewing:
     def plan(self, k, T_next, now):
         cur = self.lane if self.lane is not None else self.target
         gain = self.trk.gains(k, 22)
+        pr = self.probe
+        if pr is not None and pr["res"] is None and 0 <= pr["k"] - k < gain.shape[1]:
+            gain[pr["i"] // 2, pr["k"] - k] += 1    # 시험할 틱은 박을 게 있는 것으로 쳐서 그 칸에 머무름
         path = plan_lanes(gain, cur, max(0.0, (T_next - now) / self.trk.P))
         self.path = path
         k0, k1 = path[0], path[1]
@@ -1187,13 +1329,22 @@ class Sewing:
               and now >= self.hold_off)
         # 키 반응 시간을 아직 못 쟀으면(첫 띠) 조금 늦게 누르고 일찍 떼서 빨간 실이 안 나오게
         pa, rb = (self.pa, self.rb) if len(self.lat) >= 2 else (max(self.pa, 0.1), max(self.rb, 0.3))
+        pr = self.probe
+        if pr is not None and pr["res"] is not None and k > pr["k1"]:
+            pr = self.probe = None                    # 시험한 띠가 다 지나감
+        if ok and pr is None:
+            self.probe_begin(lane, k, T_cur, now)
+            pr = self.probe
         wants, ends, nxt = {}, {}, []
         for c, key in ((0, LEFT_KEY), (1, RIGHT_KEY)):
             want = end = False
             if ok:
                 i = 2 * lane + c
-                p0, p1, pm = trk.present(i, k), trk.present(i, k + 1), trk.present(i, k - 1)
+                A, D = self.edges(i)
+                p0, p1, pm = trk.present(i, k, A, D), trk.present(i, k + 1, A, D), trk.present(i, k - 1, A, D)
                 t_on = T_cur + pa + self.jit_pa
+                if pr is not None and pr["i"] == i and pr["edge"] == "A" and k == pr["k"]:
+                    t_on += 0.02                      # 시험 누름은 조금 더 여유 있게 (틱이 늦게 와도 빨간 실이 안 나게)
                 t_off = T_next - rb - self.jit_rb
                 if p0:
                     want = (p1 or now < t_off) and (pm or now >= t_on)
@@ -1210,11 +1361,18 @@ class Sewing:
 
     def apply_keys(self, now):
         wants, ends, nxt = self.key_states(now)
-        for key, want in wants.items():
+        pr = self.probe
+        for c, (key, want) in enumerate(wants.items()):
             was = self.keys.down[key] is not None
             self.keys.set(key, want, now)
             if was and not want and ends[key]:
                 self.pending_end = now
+            if want and not was:
+                if pr is not None and pr["edge"] == "A" and pr["res"] is None and self.lane is not None \
+                        and pr["i"] == 2 * self.lane + c:
+                    pr["frozen"] = True               # 시험 누름 시작 — 이때 점수가 기준
+                elif self.probe_wait > 0:
+                    self.probe_wait -= 1              # 띠 하나 시작할 때마다 (다음 줄 시험까지 남은 띠 수)
         self.keys.tick(now)
         return nxt
 
@@ -1223,23 +1381,36 @@ class Sewing:
         if not self.keys.held() or self.sc is None or len(self.scores) < 2:
             return
         recent = max(s for (t, s) in self.scores if self.tf - t <= 0.3)
-        if recent - self.sc < 2.5:
+        # 줄 시험 중인 키는 조금만 깎여도 바로 뗌 (일부러 한 줄 넓혀 누른 것이라 깎이면 곧 '그 줄은 아님')
+        pr = self.probe
+        probing = False
+        if pr is not None and pr["res"] is None and self.keys.down[(LEFT_KEY, RIGHT_KEY)[pr["i"] % 2]] is not None:
+            probing = pr["frozen"] or (pr["edge"] == "D" and self.tf >= self.trk.phi + pr["k"] * self.trk.P - 0.01)
+        if recent - self.sc < (0.9 if probing else 2.5):
             return
         held = self.keys.held()
-        since = now - min(t for t in self.keys.down.values() if t is not None)
         k, T_cur, T_next = self.times(now)
         self.keys.release_all()
         self.pending_end = None
         self.hold_off = T_next + 0.01
         self.res["pen"] += 1
         kv, Tv, _ = self.vis_times(self.tf - 0.04)
-        print(f"  [빨간 실] 점수가 깎여서 바로 뗌 (깎이기 시작: 화면상 틱 뒤 {self.tf - 0.04 - Tv:.2f}초쯤"
-              f" · 반응 {self.comp:.2f}초)")
-        # 깎였다 = 그 구간에 띠가 없었다 → 박음질 줄 확인에 씀. 줄이 맞으면 타이밍을 조금 보정
         lit = [c for c in (0, 1) if self.btn[c]]
         cs = lit if len(lit) == 1 else ([0 if held[0] == LEFT_KEY else 1] if len(held) == 1 else [])
-        if cs and self.lane is not None:
-            self.edge_evidence(2 * self.lane + cs[0], kv)
+        col = 2 * self.lane + cs[0] if cs and self.lane is not None else None
+        if pr is not None and (probing or (col == pr["i"] and kv <= pr["k"] + 1)):
+            if pr["mix"] or len(held) > 1:
+                self.probe = None                   # 두 키가 같이 눌려 있었음 → 어느 쪽인지 모름
+            else:
+                print("  [시험] 한 줄 일찍 눌러 봤더니 빨간 실 → 시작 줄은 그대로" if pr["edge"] == "A"
+                      else "  [시험] 한 줄 더 누르고 있어 봤더니 빨간 실 → 끝 줄은 그대로")
+                self.probe_result(False)
+        else:
+            print(f"  [빨간 실] 점수가 깎여서 바로 뗌 (깎이기 시작: 화면상 틱 뒤 {self.tf - 0.04 - Tv:.2f}초쯤"
+                  f" · 반응 {self.comp:.2f}초)")
+            # 깎였다 = 그 구간에 띠가 없었다 → 박음질 줄 확인에 씀
+            if col is not None:
+                self.edge_evidence(col, kv)
         self.scores.clear()
         self.scores.append((self.tf, self.sc))
 
@@ -1300,6 +1471,7 @@ class Sewing:
                     last_vk = kv
                     self.new_interval(kv)
                 self.record_single()
+                self.check_probe()
                 k, T_cur, T_next = self.times(now)
                 self.check_end(now)
                 gain = self.plan(k, T_next, now)
@@ -1337,6 +1509,7 @@ class Sewing:
             _learned["dA"] = self.trk.A - self.hit0
             _learned["dD"] = self.trk.D - self.hit0
             _learned["rb"] = self.rb
+            _learned["pw"] = int(min(self.probe_wait, 400))
         save_learned()
         dts = np.array(self.dts[5:] or [0.0])
         print(f"  (키 반응 {self.comp:.2f}초 · 화면 한 바퀴 평균 {dts.mean() * 1000:.0f}ms"
