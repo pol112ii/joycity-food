@@ -8,7 +8,8 @@
   ④ 능력 → 고물소환 → 리어카맨 클릭 → 완성품 팔기 → 닫기   (마결자동과 똑같이, 리어카맨 따라가기 포함)
   ⑤ ①로
 
-쉬는 시간 없음. 매크로 방지 확인 창이 뜨면 멈추고 텔레그램으로 알림 (macro_guard.py).
+쉬는 시간: 기본은 없음. 아래 WORK_MINS / REST_MINS 를 적으면 그만큼 제작하고 그만큼 쉼 (쉬는 동안 아무것도 안 누름).
+매크로 방지 확인 창이 뜨면 멈추고 텔레그램으로 알림 (macro_guard.py).
 ring_cycle.py / auto_sew.py / auto_match.py 는 고치지 않고 그대로 불러다 씀 (부품).
 
 ■ 준비 (한 번만) — 사용법.txt 의 10번 참고
@@ -54,6 +55,9 @@ CHECK_SLOTS = True                  # 재료를 넣은 뒤 칸마다 레시피�
 SLOT_LOOSE = 1.4                    # 재료 확인 때 칸 그림이 기준보다 이만큼(배)까지 흐려도 레시피 재료로 봄
 GAME_FAIL_STOP = 3                  # 의장이가 연속 이만큼 실패(점수 못 채움)하면 이번 바퀴를 멈추고 정리
 CART_ALT = False                   # True = 리어카맨을 Alt 키를 누른 채로 누름 (게임에서 Alt = 바닥 아이템을 줍지 않고 이동)
+WORK_MINS = 15                      # 이만큼(분) 제작하면
+REST_MINS = 0                       # 이만큼(분) 쉼 — 0 이면 안 쉼.  예) 15분 제작 → 15분 휴식:  WORK_MINS = 15, REST_MINS = 15
+                                    #   판 중간에 끊지 않고 하던 판이 끝난 뒤에 쉼. 쉬는 동안은 마우스/키보드를 전혀 안 건드림
 
 running = False
 alive = True
@@ -103,6 +107,41 @@ class _Link:
 
     def release_keys(self):
         release_keys()
+
+
+# ==================== 제작 / 휴식 시간 ====================
+
+_work = {"start": None, "rest_until": 0.0}      # 제작을 시작한 시각 / 쉬는 중이면 끝나는 시각
+
+
+def take_rest():
+    """WORK_MINS 분 제작했으면 REST_MINS 분 쉼 (아무것도 안 누름). 판과 판 사이에서만 불림.
+
+    쉬는 중에 F8 을 누르면 바로 끝나고, 다시 F8 로 시작하면 제작 시간을 처음부터 다시 잼.
+    쉬는 중에 매크로 방지 창으로 멈췄다가 풀리면 남은 시간을 마저 쉼.
+    """
+    if REST_MINS <= 0 or WORK_MINS <= 0:
+        return
+    now = time.time()
+    if _work["start"] is None:
+        _work["start"] = now
+    if _work["rest_until"]:                     # 쉬다가 멈췄다 다시 온 것 (멈춰 있던 시간도 쉰 걸로 침)
+        if now < _work["rest_until"]:
+            print(f"[휴식] 마저 쉼 ({time.strftime('%H:%M', time.localtime(_work['rest_until']))}에 다시 시작)")
+    elif now - _work["start"] < WORK_MINS * 60:
+        return
+    else:
+        worked = (now - _work["start"]) / 60
+        _work["rest_until"] = now + REST_MINS * 60
+        print(f"[휴식] {worked:.0f}분 제작함 → {REST_MINS:g}분 쉼 "
+              f"({time.strftime('%H:%M', time.localtime(_work['rest_until']))}에 다시 시작)  F8 = 바로 멈춤")
+    release_keys()
+    while on() and time.time() < _work["rest_until"]:
+        time.sleep(0.3)
+    if on():
+        _work["start"], _work["rest_until"] = time.time(), 0.0
+        am._scan_cache = None                # 쉬고 나면 인벤토리는 새로 읽고 시작
+        print("  휴식 끝 → 계속")
 
 
 # ==================== 설정을 부품에 넘기기 ====================
@@ -221,7 +260,8 @@ def load():
     sew.load_learned()
     print("레시피:", ", ".join(f"{n} x{c}" for n, c in _recipe),
           "/ 줍기:", ", ".join(f"{n} {p}무더기" for n, p in _piles.items()) or "안 함",
-          "/ 팔기:", ", ".join(SELL) or "안 함")
+          "/ 팔기:", ", ".join(SELL) or "안 함",
+          "/ 쉬기:", f"{WORK_MINS:g}분 제작 → {REST_MINS:g}분 휴식" if REST_MINS > 0 and WORK_MINS > 0 else "안 함")
     return True
 
 
@@ -319,6 +359,9 @@ def craft_all(sct):
     while on() and played < MAX_ROUNDS:
         w = sew.find_game_win()
         if w is None:
+            take_rest()                       # 제작 시간이 찼으면 여기서 쉼 (판 중간에는 안 끊음)
+            if not on():
+                return done
             am.JOB_BTN = rc.main_pt("job_icon")
             if not am.open_furniture_window(sct):
                 return -1
@@ -416,6 +459,9 @@ def worker():
                     time.sleep(0.15)
                     continue
                 set_running(True)
+                take_rest()                     # 제작 시간이 찼으면 바퀴 사이에서 쉼
+                if not running:
+                    continue
                 cycle += 1
                 print(f"\n========== {cycle}바퀴째 ==========")
                 problem = None
@@ -466,6 +512,8 @@ def worker():
 def toggle():
     set_running(not running)
     am._scan_cache = None
+    if running:
+        _work["start"], _work["rest_until"] = time.time(), 0.0      # 직접 시작하면 제작 시간을 처음부터 잼
     print("\n▶ 시작됨" if running else "\n⏸ 정지됨 (지금 하던 동작이 끝나면 멈춤)")
 
 
