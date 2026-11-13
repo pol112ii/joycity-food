@@ -71,6 +71,10 @@ PICK_TRIES = 6                      # 재료 한 무더기를 줍기 위해 눌�
 # '한 번 앉아서 하는 시간(세션)' 단위로 움직임. 숫자는 전부 범위 안에서 매번 랜덤.
 # 카드판/리어카맨 중간에는 절대 안 쉼. 쉬는 중에도 F8 = 바로 멈춤
 REST = True                         # False 로 하면 아래 전부 안 함 (쉬지 않고 계속)
+WORK_MINS = 0                       # 이만큼(분) 만들면 (범위로 적으면 매번 랜덤, 예: (30, 50))
+REST_MINS = 0                       # 이만큼(분) 쉼 — 0 이면 안 쉼 (위 REST 와 따로 동작)
+                                    #   예) 30분 일 / 20분 휴식:  WORK_MINS = 30, REST_MINS = 20
+                                    #   카드판 중간에는 안 끊고 판이 끝난 뒤에 쉼. 쉬는 동안 마우스/키보드를 전혀 안 건드림
 SESSION_MINS = (40, 90)             # 한 번 앉아서 하는 시간
 BREAK_MINS = (10, 25)               # 세션이 끝나면 쉬는 시간 (제작 창 닫고 자리 비움)
 BIG_EVERY_HOURS = (3, 4)            # 이만큼마다 한 번은 크게 쉼 (밥 먹는 것처럼)
@@ -753,6 +757,115 @@ def after_sell_rest(sct):
         rest_for(_skewed(*AFTER_SELL_SECS) * (1 + FATIGUE * _tired()), "팔고 나서 잠깐")
 
 
+_work = {"start": None, "rest_until": 0.0, "len": None}
+
+
+def _pick(v):
+    return random.uniform(*v) if isinstance(v, (tuple, list)) else float(v)
+
+
+def _hi(v):
+    return max(v) if isinstance(v, (tuple, list)) else float(v)
+
+
+def _rest_on():
+    return _hi(REST_MINS) > 0 and _hi(WORK_MINS) > 0
+
+
+def take_rest():
+    """WORK_MINS 분 만들었으면 REST_MINS 분 쉼 (아무것도 안 누름). 판과 판 사이에서만 불림."""
+    if not _rest_on():
+        return
+    now = time.time()
+    if _work["start"] is None:
+        _work["start"] = now
+    if _work["len"] is None:
+        _work["len"] = _pick(WORK_MINS) * 60
+    if _work["rest_until"]:
+        if now < _work["rest_until"]:
+            print(f"[휴식] 마저 쉼 ({time.strftime('%H:%M', time.localtime(_work['rest_until']))}에 다시 시작)")
+    elif now - _work["start"] < _work["len"]:
+        return
+    else:
+        rm = _pick(REST_MINS)
+        _work["rest_until"] = now + rm * 60
+        print(f"[휴식] {(now - _work['start']) / 60:.0f}분 만듦 → {rm:.0f}분 쉼 "
+              f"({time.strftime('%H:%M', time.localtime(_work['rest_until']))}에 다시 시작)  F8 = 바로 멈춤")
+    _mstat["doing"] = "휴식"
+    while running and alive and time.time() < _work["rest_until"]:
+        time.sleep(0.3)
+    _mstat["rest_end"], _mstat["since_rest"] = time.time(), 0
+    if running and alive:
+        _work["start"], _work["rest_until"], _work["len"] = time.time(), 0.0, None
+        am._scan_cache = None
+        print("  휴식 끝 → 계속")
+
+
+# ==================== 매크로 방지 창 기록 (macro_stat.txt) ====================
+# 확인 창이 뜰 때마다 그 직전 상황을 한 줄씩 적음 → 며칠 모아서 보내주면 언제 잘 뜨는지 분석
+STAT_FILE = os.path.join(HERE, "macro_stat.txt")
+_mstat = {"start": None, "rest_end": None, "last": None, "games": [], "since_rest": 0, "doing": "-"}
+
+
+def log_macro():
+    now = time.time()
+    m = _mstat
+    mins = lambda t: f"{(now - t) / 60:.1f}" if t else "-"
+    recent = sum(1 for t in m["games"] if now - t <= 600)
+    cl = _cart_log
+    row = [time.strftime("%Y-%m-%d %H:%M:%S"), m["doing"], mins(m["start"]), mins(m["rest_end"]),
+           mins(m["last"]), str(m["since_rest"]), str(len(m["games"])), str(recent),
+           str(cl.get("sells", 0)), str(cl.get("clicks", 0)),
+           f"{WORK_MINS}/{REST_MINS}" if _rest_on() else "안쉼", "사람처럼쉬기" if REST else "-"]
+    m["last"] = now
+    try:
+        new = not os.path.exists(STAT_FILE)
+        with open(STAT_FILE, "a", encoding="utf-8") as f:
+            if new:
+                f.write("시각\t하던일\t켠뒤(분)\t휴식뒤(분)\t지난창뒤(분)\t휴식뒤판\t전체판\t최근10분판\t"
+                        "팔기횟수\t리어카클릭\t제작/휴식\tREST\n")
+            f.write("\t".join(row) + "\n")
+        print(f"  (macro_stat.txt 에 기록: {m['doing']} 중 · 켠 뒤 {row[2]}분 · 휴식 뒤 {row[3]}분 · 휴식 뒤 {row[5]}판)")
+    except Exception:
+        pass
+
+
+def macro_report():
+    """py ring_cycle.py 매크로기록 — macro_stat.txt 요약."""
+    from collections import Counter
+    if not os.path.exists(STAT_FILE):
+        print("macro_stat.txt 가 아직 없어요 — 확인 창이 한 번이라도 뜨면 생김")
+        return
+    with open(STAT_FILE, encoding="utf-8") as f:
+        rows = [ln.rstrip("\n").split("\t") for ln in f][1:]
+    rows = [r for r in rows if len(r) >= 11]
+    print(f"\n매크로 방지 창 {len(rows)}번")
+    num = lambda v: float(v) if v not in ("-", "") else None
+    for i, name in ((4, "지난 창 뒤"), (3, "휴식 끝난 뒤"), (2, "켠 뒤")):
+        v = [num(r[i]) for r in rows if num(r[i]) is not None]
+        if v:
+            print(f"  {name}: 평균 {np.mean(v):.0f}분 · 가장 짧게 {min(v):.0f}분 · 가장 길게 {max(v):.0f}분")
+    v = [int(r[5]) for r in rows if r[5].isdigit()]
+    if v:
+        print(f"  휴식 뒤 몇 판 만에: 평균 {np.mean(v):.1f}판 (최소 {min(v)}, 최대 {max(v)})")
+    print("  하던 일: " + ", ".join(f"{k} {c}번" for k, c in Counter(r[1] for r in rows).most_common()))
+    print("  → 며칠 모이면 macro_stat.txt 를 보내주세요")
+
+
+class _Mod(type(sys)):
+    """매크로 방지 감시가 봇을 멈출 때(running = False) 기록을 남기려고 — 이 파일 안에서 멈추는 건 해당 없음."""
+    def __setattr__(self, name, value):
+        if name == "running" and not value and self.__dict__.get("running"):
+            try:
+                log_macro()
+            except Exception:
+                pass
+        super().__setattr__(name, value)
+
+
+sys.modules[__name__].__class__ = _Mod
+
+
 def craft_all(sct):
     """재료가 떨어질 때까지 반지 만들기. 몇 번 했는지 반환 (-1 = 오류로 멈춤)."""
     am.RECIPE = list(RECIPE)
@@ -819,7 +932,11 @@ def craft_all(sct):
             done += 1
             fails = 0
             print(f"★ 반지 만들기 {done}번째 완료 (클릭 {stats['clicks']}회, {stats['secs']}초)")
+            _mstat["games"].append(time.time())
+            _mstat["since_rest"] += 1
             maybe_rest(sct)
+            take_rest()                      # 만든 시간이 찼으면 여기서 쉼
+            _mstat["doing"] = "만들기"
         else:
             fails += 1
             if fails >= 3:
@@ -1424,15 +1541,20 @@ def worker():
                     time.sleep(0.15)
                     continue
                 am.running = am.alive = True
+                take_rest()                     # 만든 시간이 찼으면 바퀴 사이에서 쉼
+                if not running:
+                    continue
                 cycle += 1
                 print(f"\n========== {cycle}바퀴째 ==========")
                 problem = None
                 n = 0
+                _mstat["doing"] = "팔기"
                 if not sell_all(sct):
                     problem = "팔기"
-                elif not pick_up(sct):
+                elif _mstat.__setitem__("doing", "줍기") or not pick_up(sct):
                     problem = "줍기"
                 else:
+                    _mstat["doing"] = "만들기"
                     n = craft_all(sct)
                     if n < 0:
                         problem = "만들기"
@@ -1472,6 +1594,9 @@ def toggle():
     am.running = running
     if running:
         _rest.clear()                       # 직접 멈췄다 다시 켜면 쉬는 시간 계산도 새로 시작
+        _work["start"], _work["rest_until"], _work["len"] = time.time(), 0.0, None
+        _mstat["start"] = _mstat["rest_end"] = time.time()
+        _mstat["since_rest"] = 0
     print("\n▶ 시작됨" if running else "\n⏸ 정지됨 (지금 하던 동작이 끝나면 멈춤)")
 
 
@@ -1505,7 +1630,9 @@ def main():
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) > 1 and sys.argv[1] == "기록":
+        if len(sys.argv) > 1 and sys.argv[1] == "매크로기록":
+            macro_report()
+        elif len(sys.argv) > 1 and sys.argv[1] == "기록":
             cart_report()               # 리어카맨 클릭 기록 비교 (Alt 켬/끔)
         else:
             main()
