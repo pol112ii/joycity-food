@@ -7,7 +7,7 @@
   ③ 방 바닥에서 재료 무더기 줍기               (마결자동과 똑같이)
   ④ 요리 — auto_cook.py 의 재료 넣기/요리를 그대로 써서 재료가 떨어질 때까지
   ⑤ ①로
-리어카(팔기) 없음. 쉬는 시간 없음. 매크로 방지 확인 창이 뜨면 멈추고 텔레그램 알림 (macro_guard.py).
+리어카(팔기) 없음. 쉬는 시간: 아래 WORK_MINS / REST_MINS (0 이면 안 쉼). 매크로 방지 확인 창이 뜨면 멈추고 텔레그램 알림 (macro_guard.py).
 auto_cook.py / ring_cycle.py / auto_match.py 는 고치지 않고 그대로 불러다 씀 (부품).
 
 ■ 준비 (한 번만) — 사용법.txt 의 '식장이 사이클' 참고
@@ -57,6 +57,9 @@ DROP_CLEAR = 22                     # 내릴 자리 = 물건/벽에서 이만큼
                                     #   작게 하면 촘촘히 놓음 — 너무 작으면 옆 물건 칸에 걸려서 안 놓임
 FLOOR_TOL = 28                      # 바닥 색과 이만큼(0~255)까지 달라도 빈 바닥으로 봄 (py cook_test.py 8번 그림으로 확인)
 DROP_TRIES = 6                      # 한 칸이 안 버려지면 이만큼까지 다른 빈 자리로 다시 해봄
+WORK_MINS = 0                       # 이만큼(분) 요리하면
+REST_MINS = 0                       # 이만큼(분) 쉼 — 0 이면 안 쉼.  예) 20분 요리 → 15분 휴식:  WORK_MINS = 20, REST_MINS = 15
+                                    #   요리 중간에는 안 끊고 한 판이 끝난 뒤에 쉼. 쉬는 동안 마우스/키보드를 전혀 안 건드림
 
 running = False
 alive = True
@@ -113,6 +116,36 @@ class _Link:
 
     def release_keys(self):
         ac.release_keys()
+
+
+# ==================== 제작 / 휴식 시간 ====================
+
+_work = {"start": None, "rest_until": 0.0}
+
+
+def take_rest():
+    """WORK_MINS 분 요리했으면 REST_MINS 분 쉼 (아무것도 안 누름). 판과 판 사이에서만 불림."""
+    if REST_MINS <= 0 or WORK_MINS <= 0:
+        return
+    now = time.time()
+    if _work["start"] is None:
+        _work["start"] = now
+    if _work["rest_until"]:
+        if now < _work["rest_until"]:
+            print(f"[휴식] 마저 쉼 ({time.strftime('%H:%M', time.localtime(_work['rest_until']))}에 다시 시작)")
+    elif now - _work["start"] < WORK_MINS * 60:
+        return
+    else:
+        _work["rest_until"] = now + REST_MINS * 60
+        print(f"[휴식] {(now - _work['start']) / 60:.0f}분 요리함 → {REST_MINS:g}분 쉼 "
+              f"({time.strftime('%H:%M', time.localtime(_work['rest_until']))}에 다시 시작)  F8 = 바로 멈춤")
+    ac.release_keys()
+    while on() and time.time() < _work["rest_until"]:
+        time.sleep(0.3)
+    if on():
+        _work["start"], _work["rest_until"] = time.time(), 0.0
+        ac._scan_cache = None
+        print("  휴식 끝 → 계속")
 
 
 # ==================== 설정을 부품에 넘기기 ====================
@@ -274,7 +307,8 @@ def load():
         return False
     print("레시피:", ", ".join(f"{n} x{c}" for n, c in _recipe),
           "/ 줍기:", ", ".join(f"{n} {p}무더기" for n, p in _piles.items()) or "안 함",
-          "/ 버리기:", (", ".join(_drop) + (" (20개 칸만)" if FULL_ONLY else " (전부)")) if _drop else "안 함")
+          "/ 버리기:", (", ".join(_drop) + (" (20개 칸만)" if FULL_ONLY else " (전부)")) if _drop else "안 함",
+          "/ 쉬기:", f"{WORK_MINS:g}분 요리 → {REST_MINS:g}분 휴식" if REST_MINS > 0 and WORK_MINS > 0 else "안 함")
     return True
 
 
@@ -482,6 +516,9 @@ def cook_all(sct):
     tpl = ac.load_templates()
     done = fails = 0
     while on() and done < MAX_ROUNDS:
+        take_rest()                         # 요리 시간이 찼으면 여기서 쉼 (판 중간에는 안 끊음)
+        if not on():
+            return done
         if not ac.craft_open(sct):
             print("제작 창이 닫혀있음 → 다시 열기")
             if not ac.reopen_window(sct):
@@ -550,6 +587,9 @@ def worker():
                     time.sleep(0.15)
                     continue
                 set_running(True)
+                take_rest()                     # 요리 시간이 찼으면 바퀴 사이에서 쉼
+                if not running:
+                    continue
                 cycle += 1
                 print(f"\n========== {cycle}바퀴째 ==========")
                 problem = None
@@ -623,6 +663,8 @@ def number_test():
 def toggle():
     set_running(not running)
     ac._scan_cache = None
+    if running:
+        _work["start"], _work["rest_until"] = time.time(), 0.0      # 직접 시작하면 요리 시간을 처음부터 잼
     print("\n▶ 시작됨" if running else "\n⏸ 정지됨 (지금 하던 동작이 끝나면 멈춤)")
 
 
