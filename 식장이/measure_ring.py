@@ -81,6 +81,46 @@ GROUPS = [
 ]
 
 
+
+def _ring_piles():
+    """같은 폴더 ring_cycle.py 의 PILES 재료 이름 (파일을 실행하지 않고 그 줄만 읽음). 못 읽으면 None."""
+    import ast
+    try:
+        with open(os.path.join(HERE, "ring_cycle.py"), encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "PILES" for t in node.targets):
+                v = ast.literal_eval(node.value)
+                return [str(k) for k in v] if isinstance(v, dict) else None
+    except Exception:
+        return None
+    return None
+
+
+def use_piles(names):
+    """바닥 무더기 그림 단계를 이 재료들로 바꿈 (ring_cycle.py 의 PILES 를 바꿨을 때)."""
+    global STEPS, GROUPS
+    old = STEPS
+    spr = [i for i, s in enumerate(old) if s[0].startswith("spr_")]
+    first, last = spr[0], spr[-1]
+    new_spr = [("spr_" + n, "box", f"바닥의 {n} 무더기 하나 (안 가려진 것)") for n in names]
+    shift = len(new_spr) - len(spr)
+    groups = []
+    for label, idx, wins in GROUPS:
+        if any(old[i][0].startswith("spr_") for i in idx):
+            idx = [i for i in idx if not old[i][0].startswith("spr_")] + list(range(first, first + len(new_spr)))
+            label = f"바닥 무더기 그림 ({'/'.join(names)})"
+        else:
+            idx = [i if i < first else i + shift for i in idx]
+        groups.append((label, idx, wins))
+    STEPS, GROUPS = old[:first] + new_spr + old[last + 1:], groups
+
+
+_names = _ring_piles()
+if _names and [s[0][4:] for s in STEPS if s[0].startswith("spr_")] != _names:
+    use_piles(_names)
+
+
 def choose_steps():
     """ring_layout.json 이 있으면 전부/일부 중 고르게 함. (단계 목록, 기존 데이터 또는 None)"""
     if not os.path.exists(OUT):
