@@ -333,6 +333,40 @@ def other_windows():
 _best_size = {}     # 그림별로 잘 맞았던 크기 배율 (다음엔 그것부터 씀)
 
 
+def _sized(key, f):
+    tpl = _sprites[key]
+    if abs(f - 1) > 0.02:
+        tpl = cv2.resize(tpl, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    return tpl
+
+
+def _color_diff(img, cx, cy, tpl, reach=3):
+    """(cx, cy) 근처에서 tpl 과 색이 가장 비슷한 자리의 픽셀별 색 차이 평균."""
+    th, tw = tpl.shape[:2]
+    t = tpl.astype(np.int16)
+    best = 1e9
+    for dy in range(-reach, reach + 1):
+        for dx in range(-reach, reach + 1):
+            y0, x0 = int(cy - th / 2 + dy), int(cx - tw / 2 + dx)
+            if y0 < 0 or x0 < 0 or y0 + th > img.shape[0] or x0 + tw > img.shape[1]:
+                continue
+            d = float(np.abs(img[y0:y0 + th, x0:x0 + tw].astype(np.int16) - t).mean())
+            best = min(best, d)
+    return best
+
+
+def _color_is(img, cx, cy, key, tpl, f):
+    """바닥 무더기: 모양이 비슷한 다른 재료(예: 중급키트/상급키트 상자)보다 이 재료 색에 더 가까운지.
+    모양 비교(matchTemplate)는 색 차이를 거의 못 봐서, 색만 다른 무더기를 헷갈림 → 색으로 한 번 더 확인."""
+    mine = _color_diff(img, cx, cy, tpl)
+    for other in _sprites:
+        if other == key or not other.startswith("spr_"):
+            continue
+        if _color_diff(img, cx, cy, _sized(other, _best_size.get(other, f))) < mine:
+            return False
+    return True
+
+
 def find_sprite(sct, key, sure, binary=False):
     """메인 창에서 그림(key)을 찾아 [(중심x, 중심y, 점수), ...] (점수 높은 순).
 
@@ -378,12 +412,15 @@ def find_sprite(sct, key, sure, binary=False):
     except Exception:
         floor_bottom = w.top + w.height
     out = []
-    while len(out) < 40:
+    for _ in range(150):                    # (색이 안 맞아서 빼는 후보가 많아도 끝없이 돌지 않게)
+        if len(out) >= 40:
+            break
         _, mx, _, (x, y) = cv2.minMaxLoc(res)
         if mx < sure:
             break
         cx, cy = w.left + x + tw / 2, w.top + y + th / 2
-        if cy < floor_bottom and not any(a <= cx < c and b <= cy < d for a, b, c, d in rects):
+        if cy < floor_bottom and not any(a <= cx < c and b <= cy < d for a, b, c, d in rects) \
+                and (binary or not key.startswith("spr_") or _color_is(img, x + tw / 2, y + th / 2, key, _sized(key, f), f)):
             out.append((int(cx), int(cy), float(mx)))
         res[max(0, y - th // 2):y + th // 2 + 1, max(0, x - tw // 2):x + tw // 2 + 1] = -1
     return out
