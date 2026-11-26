@@ -148,16 +148,31 @@ def load():
     return True
 
 
-def find_title(title):
-    """제목이 title 인 '떠 있는' 창 (띄어쓰기 무시)."""
+def _titled(title):
+    """제목이 title 인 '떠 있는' 창 전부 (띄어쓰기 무시, 화면 맨 위 창부터)."""
     want = _norm(title)
     try:
-        for w in am._gw.getAllWindows():
-            if _norm(w.title) == want and am._really_shown(w):
-                return w
+        return [w for w in am._gw.getAllWindows() if _norm(w.title) == want and am._really_shown(w)]
     except Exception:
-        pass
-    return None
+        return []
+
+
+def find_title(title):
+    """제목이 title 인 '떠 있는' 창 (띄어쓰기 무시).
+
+    같은 제목 창이 여러 개면(게임이 창을 새로 만들면서 옛 창이 남은 경우 등) 제목 줄이
+    화면에 정말 보이는 창을 고름 — 안 보이는 창을 읽으면 칸이 전부 빈 칸으로 나옴.
+    """
+    ws = _titled(title)
+    if len(ws) > 1:
+        try:
+            with mss.mss() as s:
+                for w in ws:
+                    if title_seen(s, w):
+                        return w
+        except Exception:
+            pass
+    return ws[0] if ws else None
 
 
 def _is_main(w):
@@ -465,46 +480,159 @@ def ensure_item_window():
     return wait_title("item", True, 4)
 
 
-def item_contents(sct):
-    """아이템 창 30칸의 내용 [(칸 중심, 이름), ...]  ('' = 빈 칸, None = 모르는 것)."""
-    if not ensure_item_window():
-        print("  [주의] 아이템 창이 안 열림")
-        return []
-    cells = grid("item")
+def park_off_item():
+    """커서가 아이템 창 위에 있으면 창 밖으로 살짝 비킴 (칸이나 닫기 버튼을 가리면 잘못 읽음)."""
     mx, my = pyautogui.position()
     w = find_title(_layout["titles"]["item"])
     if w is not None and w.left <= mx < w.left + w.width and w.top <= my < w.top + w.height:
-        # 커서가 칸을 가리면 잘못 읽으니 아이템 창 밖으로 살짝 비켜둠
         am.smooth_move_to(w.left - random.randint(30, 80), my, random.uniform(0.2, 0.35), bow=6)
+
+
+def title_seen(sct, w):
+    """창 제목 줄이 화면에 정말 보이는지 — 회색 제목 줄에 노란 점(최소화)과 그 바로 오른쪽 빨간 점(닫기).
+
+    빨간 점만 보면 바닥의 빨간 보석(불의요정석)도 걸림 → 노란 점 위치와 회색 바탕까지 확인.
+    """
+    try:
+        bw, bh = min(160, w.width), min(max(28, int(w.height * 0.09)), w.height)
+        s = shot_bgr(sct, w.left + w.width - bw, w.top, bw, bh).astype(int)
+    except Exception:
+        return False
+    b, g, r = s[:, :, 0], s[:, :, 1], s[:, :, 2]
+    red = (r > 190) & (g < 120) & (b < 120)
+    yel = (r > 200) & (g > 150) & (b < 110)
+    if red.sum() < 20 or yel.sum() < 20:
+        return False
+    ry, rx = np.nonzero(red)
+    yy, yx = np.nonzero(yel)
+    mean = s.mean(axis=2)
+    gray = ((s.max(axis=2) - s.min(axis=2)) <= 12) & (mean >= 15) & (mean <= 90)
+    return 5 <= rx.mean() - yx.mean() <= 90 and abs(ry.mean() - yy.mean()) <= 5 and gray.mean() >= 0.5
+
+
+def item_seen(sct, w=None):
+    """아이템 창이 화면에 정말 보이는지 (제목 줄이 캡처에 잡히는지).
+
+    창 목록에는 떠 있는데 다른 창 뒤로 가려졌거나 안 그려지면, 칸이 전부 빈 칸으로 읽혀서
+    '재료 0개' → 주워도 안 늘어난 줄 알고 계속 주움 → 칸이 가득 참 (당근삼성2, 휴식 직후).
+    """
+    w = w or find_title(_layout["titles"]["item"])
+    return w is not None and title_seen(sct, w)
+
+
+def _raise(w):
+    """창을 맨 앞으로 올림 (클릭 없이, 포커스도 안 바꿈)."""
+    try:
+        import ctypes
+        # SetWindowPos(hwnd, HWND_TOP, ..., SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
+        ctypes.windll.user32.SetWindowPos(w._hWnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)
+    except Exception:
+        pass
+
+
+def fix_item_window(sct):
+    """아이템 창이 화면에 안 보일 때 — 맨 앞으로 올려 보고, 안 되면 아래 [아이템] 아이콘으로 닫았다 다시 엶.
+    보이게 되면 True."""
+    title = _layout["titles"]["item"]
+    ws = _titled(title)
+    print(f"  [주의] 아이템 창이 화면에 안 보임 (다른 창에 가려졌거나 안 그려짐 · 같은 이름 창 {len(ws)}개) → 다시 띄움")
+    save_item_debug(sct, ws)
+    release_keys()
+    w = find_title(title)
+    if w is not None:
+        _raise(w)
+        time.sleep(random.uniform(0.3, 0.5))
+        if item_seen(sct):
+            print("    → 맨 앞으로 올리니 보임")
+            return True
+    for _ in range(2):
+        if find_title(title) is not None:
+            am.direct_click(main_pt("item_icon"), "아이템 창 닫기")       # 아이콘 = 열기/닫기
+            wait_title("item", False, 3)
+            time.sleep(random.uniform(0.4, 0.8))
+        if find_title(title) is None:
+            am.direct_click(main_pt("item_icon"), "아이템 창 열기")
+            wait_title("item", True, 4)
+        time.sleep(random.uniform(0.6, 1.0))
+        park_off_item()
+        if item_seen(sct):
+            print("    → 다시 여니 보임")
+            return True
+    print("  [중단] 아이템 창을 다시 열어도 화면에 안 보임 → 재료를 셀 수 없어서 줍지 않음 (item_debug.png 를 보내주세요)")
+    return False
+
+
+def item_contents(sct):
+    """아이템 창 30칸의 내용 [(칸 중심, 이름), ...]  ('' = 빈 칸, None = 모르는 것).
+
+    아이템 창이 안 열리거나, 화면에 안 보이고 다시 띄워도 안 되면 None (빈 칸 30개로 착각하지 않게).
+    """
+    if not ensure_item_window():
+        print("  [주의] 아이템 창이 안 열림")
+        return None
+    park_off_item()
+    if not item_seen(sct):
+        if time.time() - _seen["blind"] < 30:      # 방금 다시 띄워 봤는데 안 됨 → 또 누르지 않음
+            return None
+        if not fix_item_window(sct):
+            _seen["blind"] = time.time()
+            return None
+    _seen["blind"] = 0.0
+    cells = grid("item")
+    if not cells:
+        return None
     names = all_names()
     return [(pos, ident(sct, pos, names)) for pos in cells]
 
 
 def material_cells(sct):
-    """아이템 창에서 재료별 칸 수."""
-    got = [n for _, n in item_contents(sct)]
+    """아이템 창에서 재료별 칸 수. 아이템 창이 화면에 안 보이면 None."""
+    items = item_contents(sct)
+    if items is None:
+        return None
+    got = [n for _, n in items]
     _seen["unknown"] = got.count(None)
     return {n: got.count(n) for n in PILES}
 
 
-_seen = {"unknown": 0, "base": None}     # base = 평소에도 있는 '모르는 칸' 수 (items 에 등록 안 한 물건)
+# unknown/base = 지금 / 평소에도 있는 '모르는 칸' 수 (items 에 등록 안 한 물건)
+# blind = 아이템 창을 다시 띄워도 안 보였던 시각 (잠깐 동안은 또 누르지 않음)
+_seen = {"unknown": 0, "base": None, "blind": 0.0}
 
 
-def save_item_debug(sct):
+def save_item_debug(sct, ws=None):
+    """아이템 창을 못 읽을 때 화면을 item_debug.png 로 저장 — 창 목록에 적힌 아이템 창 자리를 빨간 네모로."""
     try:
-        w = find_title(_layout["titles"]["item"])
-        if w is None:
+        ws = _titled(_layout["titles"]["item"]) if ws is None else ws
+        rects = [(w.left, w.top, w.width, w.height) for w in ws]
+        m = main_win()
+        boxes = rects + ([(m.left, m.top, m.width, m.height)] if m else [])
+        if not boxes:
             return
-        Image.fromarray(shot_bgr(sct, w.left, w.top, w.width, w.height)[:, :, ::-1]).save(
-            os.path.join(HERE, "item_debug.png"))
-        print("  → 아이템 창을 item_debug.png 로 저장 (보내주세요)")
+        mon = sct.monitors[0]
+        left = max(min(b[0] for b in boxes), mon["left"])
+        top = max(min(b[1] for b in boxes), mon["top"])
+        right = min(max(b[0] + b[2] for b in boxes), mon["left"] + mon["width"])
+        bottom = min(max(b[1] + b[3] for b in boxes), mon["top"] + mon["height"])
+        if right <= left or bottom <= top:
+            return
+        img = Image.fromarray(shot_bgr(sct, left, top, right - left, bottom - top)[:, :, ::-1])
+        from PIL import ImageDraw
+        draw = ImageDraw.Draw(img)
+        for x, y, w, h in rects:
+            draw.rectangle([x - left, y - top, x - left + w - 1, y - top + h - 1], outline=(255, 0, 0), width=2)
+        img.save(os.path.join(HERE, "item_debug.png"))
+        print(f"    아이템 창 자리(창 목록): {rects} → 화면을 item_debug.png 로 저장 (보내주세요)")
     except Exception:
         pass
 
 
 def read_materials(sct):
-    """줍기 전에 재료 칸 수 — 아이템 창에 '모르는 칸'이 많으면 제대로 못 읽은 것이라 창을 다시 열고 한 번 더."""
+    """줍기 전에 재료 칸 수 — 아이템 창에 '모르는 칸'이 많으면 제대로 못 읽은 것이라 창을 다시 열고 한 번 더.
+    아이템 창이 화면에 안 보이면 None."""
     have = material_cells(sct)
+    if have is None:
+        return None
     base = _seen["base"]
     if _seen["unknown"] < 3 or (base is not None and _seen["unknown"] < base + 3):
         _seen["base"] = _seen["unknown"] if base is None else min(base, _seen["unknown"])
@@ -518,6 +646,8 @@ def read_materials(sct):
         wait_title("item", False, 3)
     time.sleep(random.uniform(0.5, 0.9))
     have = material_cells(sct)
+    if have is None:
+        return None
     if _seen["unknown"] >= 3 and (base is None or _seen["unknown"] >= base + 3):
         print(f"  [주의] 다시 열어도 알아볼 수 없는 칸이 {_seen['unknown']}개 — item_debug.png 를 보내주세요")
         if base is None:
@@ -533,6 +663,9 @@ _short = set()          # 지난 만들기 때 모자랐던 재료 (칸은 있�
 def pick_up(sct):
     """바닥에서 모자란 무더기를 주움. 다 주웠으면 True."""
     have = read_materials(sct)
+    if have is None:
+        print("[중단] 아이템 창을 못 읽어서 줍기 안 함 (주워도 확인을 못 해서 칸만 가득 참)")
+        return False
     print(f"[줍기] 지금 인벤토리: {have} / 필요: {PILES}")
     want = {n: (max(p, have.get(n, 0) + 1) if n in _short else p) for n, p in PILES.items()}
     if _short:
@@ -550,6 +683,9 @@ def pick_up(sct):
                 click_at((cx, cy), label=f"'{name}' 줍기 (일치 {sc:.2f})")
                 time.sleep(random.uniform(0.9, 1.3))
                 have = read_materials(sct)
+                if have is None:
+                    print("[중단] 줍고 나서 아이템 창을 못 읽음 → 더 줍지 않음")
+                    return False
                 if have.get(name, 0) > before:
                     ok = True
                     break
@@ -640,6 +776,8 @@ def close_game_windows(sct):
             w = find_title(title)
             if w is None:
                 continue
+            if kind == "item" and not title_seen(sct, w):
+                continue                    # 가려진 창의 '빨간 점'은 바닥 보석일 수 있음 → 안 누름
             pt = win_pt("sell_close", w) if kind == "sell" else find_red_close(sct, w)
             if pt is None:
                 continue
@@ -648,6 +786,7 @@ def close_game_windows(sct):
             time.sleep(random.uniform(0.4, 0.7))
     print(f"  [정리] 닫은 창: {', '.join(closed) if closed else '없음'}")
     am._scan_cache = None
+    _seen["blind"] = 0.0                    # 창을 정리했으니 아이템 창이 안 보이면 다시 띄워 봄
 
 
 def _skewed(lo, hi):
@@ -982,10 +1121,10 @@ def craft_all(sct):
             am._scan_cache = None
             if not close_craft(sct):
                 return -1
-            have = material_cells(sct)
-            out = [n for n, _ in RECIPE if have.get(n, 0) == 0]
+            have = material_cells(sct)             # None = 아이템 창이 안 보여서 못 셈
+            out = [n for n, _ in RECIPE if have.get(n, 0) == 0] if have is not None else []
             fails += 1
-            if not out and fails < 2:
+            if have is not None and not out and fails < 2:
                 # 재료는 보이는데 넣기만 실패 → 바로 끝내지 말고 한 번 더 (팔러 가면 체력만 씀)
                 print(f"  재료를 다 못 넣음 (재료는 있음: {have}) → 제작 창 다시 열어서 한 번 더")
                 continue
@@ -1041,7 +1180,7 @@ def eat_all(sct):
     stuck = set()                           # 눌러도 안 줄던 칸 (다시 안 누름)
     for _ in range(3):                      # 먹고 나면 칸이 당겨질 수 있어서 다시 확인
         cells = grid("item")
-        foods = [pos for pos, n in item_contents(sct) if n == FOOD and pos not in stuck]
+        foods = [pos for pos, n in (item_contents(sct) or []) if n == FOOD and pos not in stuck]
         if not foods or cells is None:
             break
         pitch = max(cells[1][0] - cells[0][0], 20)
@@ -1469,7 +1608,11 @@ def pick_sell_target():
 
 def sell_all(sct):
     """아까비깡을 먹고, 리어카맨에게 결혼반지를 전부 팜. 팔 게 없으면 바로 True."""
-    got = [n for _, n in item_contents(sct)]
+    items = item_contents(sct)
+    if items is None:
+        print("[팔기] 아이템 창을 못 읽어서 건너뜀")
+        return True
+    got = [n for _, n in items]
     n_sell = sum(1 for n in got if n in SELL)
     if n_sell == 0:
         return True
@@ -1483,7 +1626,7 @@ def sell_all(sct):
         print(f"[팔기] 반지 {n_sell}개 (이번 팔기 기준 {_sell_target}개) · 빈 칸 {free}개 → 아직 안 팜")
         return True
     eat_all(sct)
-    n_sell = sum(1 for _, n in item_contents(sct) if n in SELL)
+    n_sell = sum(1 for _, n in (item_contents(sct) or []) if n in SELL)
     if n_sell == 0:
         return True
     print(f"[팔기] 팔 것 {n_sell}개")
