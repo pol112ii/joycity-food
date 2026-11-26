@@ -483,7 +483,48 @@ def item_contents(sct):
 def material_cells(sct):
     """아이템 창에서 재료별 칸 수."""
     got = [n for _, n in item_contents(sct)]
+    _seen["unknown"] = got.count(None)
     return {n: got.count(n) for n in PILES}
+
+
+_seen = {"unknown": 0, "base": None}     # base = 평소에도 있는 '모르는 칸' 수 (items 에 등록 안 한 물건)
+
+
+def save_item_debug(sct):
+    try:
+        w = find_title(_layout["titles"]["item"])
+        if w is None:
+            return
+        Image.fromarray(shot_bgr(sct, w.left, w.top, w.width, w.height)[:, :, ::-1]).save(
+            os.path.join(HERE, "item_debug.png"))
+        print("  → 아이템 창을 item_debug.png 로 저장 (보내주세요)")
+    except Exception:
+        pass
+
+
+def read_materials(sct):
+    """줍기 전에 재료 칸 수 — 아이템 창에 '모르는 칸'이 많으면 제대로 못 읽은 것이라 창을 다시 열고 한 번 더."""
+    have = material_cells(sct)
+    base = _seen["base"]
+    if _seen["unknown"] < 3 or (base is not None and _seen["unknown"] < base + 3):
+        _seen["base"] = _seen["unknown"] if base is None else min(base, _seen["unknown"])
+        return have
+    print(f"  [주의] 아이템 창에 알아볼 수 없는 칸이 {_seen['unknown']}개 → Alt 를 떼고 아이템 창을 다시 열어서 다시 읽음")
+    save_item_debug(sct)
+    release_keys()
+    w = find_title(_layout["titles"]["item"])
+    if w is not None:
+        am.direct_click(main_pt("item_icon"), "아이템 창 닫기")       # 아이콘 = 열기/닫기
+        wait_title("item", False, 3)
+    time.sleep(random.uniform(0.5, 0.9))
+    have = material_cells(sct)
+    if _seen["unknown"] >= 3 and (base is None or _seen["unknown"] >= base + 3):
+        print(f"  [주의] 다시 열어도 알아볼 수 없는 칸이 {_seen['unknown']}개 — item_debug.png 를 보내주세요")
+        if base is None:
+            _seen["base"] = _seen["unknown"]     # 처음부터 이렇다면 등록 안 한 물건들일 수 있음 → 다음부턴 이걸 기준으로
+    else:
+        _seen["base"] = _seen["unknown"] if base is None else min(base, _seen["unknown"])
+    return have
 
 
 _short = set()          # 지난 만들기 때 모자랐던 재료 (칸은 있어도 개수가 모자람) → 한 무더기 더 주움
@@ -491,7 +532,7 @@ _short = set()          # 지난 만들기 때 모자랐던 재료 (칸은 있�
 
 def pick_up(sct):
     """바닥에서 모자란 무더기를 주움. 다 주웠으면 True."""
-    have = material_cells(sct)
+    have = read_materials(sct)
     print(f"[줍기] 지금 인벤토리: {have} / 필요: {PILES}")
     want = {n: (max(p, have.get(n, 0) + 1) if n in _short else p) for n, p in PILES.items()}
     if _short:
@@ -508,7 +549,7 @@ def pick_up(sct):
             for cx, cy, sc in cands[:PICK_TRIES]:
                 click_at((cx, cy), label=f"'{name}' 줍기 (일치 {sc:.2f})")
                 time.sleep(random.uniform(0.9, 1.3))
-                have = material_cells(sct)
+                have = read_materials(sct)
                 if have.get(name, 0) > before:
                     ok = True
                     break
@@ -917,6 +958,11 @@ def craft_all(sct):
         if not am.open_furniture_window(sct):
             return -1
         left = am.filled_slots(sct, NUM_SLOTS)
+        for _ in range(6):                  # 판이 막 끝나면 재료 칸이 하나씩 비워지는 중일 수 있음 → 잠깐 기다려 봄
+            if not left or not (running and alive):
+                break
+            time.sleep(0.5)
+            left = am.filled_slots(sct, NUM_SLOTS)
         if left:
             # 지난번에 넣다 만 재료가 칸에 남아 있음 → 그대로 넣으면 레시피가 틀어짐
             print(f"  [재료 확인] 넣기 전인데 칸 {[i + 1 for i in left]} 에 재료가 남아 있음 → 제작 창 닫고 다시")
@@ -1204,7 +1250,7 @@ def _on_pile(x, y, boxes):
 _last_aim = [None]              # chase_click 이 실제로 누른 몸통 자리 (재료를 피해 다른 자리를 눌렀는지 보려고)
 
 
-def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=(), alts=()):
+def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=(), alts=(), alt=False):
     """걸어 다니는 리어카맨을 따라가서 누름 → (누른 x, y, 리어카맨 위치) 또는 None(놓침).
 
     '방금 찍은 화면'에서 찾은 위치로만 누름 — 예전 위치로는 절대 안 누름.
@@ -1272,9 +1318,17 @@ def chase_click(sct, cart, body, extra=(0, 0), limit=2.5, tol=6, avoid=(), alts=
         if o is not None and abs(mx - cx) <= tol and abs(my - cy) <= tol and jerk <= tol \
                 and not _on_pile(mx, my, avoid):
             _last_aim[0] = tuple(aim[0])
-            pyautogui.mouseDown()
-            time.sleep(random.uniform(0.04, 0.07))
-            pyautogui.mouseUp()
+            if alt:
+                _alt(True)                    # Alt 는 누르는 순간에만 (아래 cart_click 설명)
+                time.sleep(random.uniform(0.03, 0.05))
+            try:
+                pyautogui.mouseDown()
+                time.sleep(random.uniform(0.04, 0.07))
+                pyautogui.mouseUp()
+            finally:
+                if alt:
+                    time.sleep(random.uniform(0.03, 0.06))
+                    _alt(False)
             return mx, my, q
         # 다음에 다시 볼 때쯤 몸통이 있을 자리로 커서를 옮김
         d = random.uniform(0.03, 0.05)
@@ -1299,19 +1353,13 @@ def release_keys():
 
 
 def cart_click(sct, cart, body, extra, tol, avoid, alts):
-    """리어카맨 따라가서 누르기 — CART_ALT 면 따라가는 동안 Alt 를 누르고 있다가 누른 뒤 뗌.
-    (게임에서 Alt = 바닥 아이템을 줍지 않고 이동 → 리어카맨 밑의 재료를 안 주움)"""
-    if not CART_ALT:
-        return chase_click(sct, cart, body, extra, tol=tol, avoid=avoid, alts=alts)
-    res = None
-    _alt(True)
-    try:
-        time.sleep(random.uniform(0.05, 0.12))
-        res = chase_click(sct, cart, body, extra, tol=tol, avoid=avoid, alts=alts)
-        time.sleep(random.uniform(0.03, 0.08))
-    finally:
-        _alt(False)
-    return res
+    """리어카맨 따라가서 누르기 — CART_ALT 면 '누르는 순간에만' Alt 를 누르고 바로 뗌.
+    (게임에서 Alt = 바닥 아이템을 줍지 않고 이동 → 리어카맨 밑의 재료를 안 주움)
+
+    예전엔 따라가는 내내 Alt 를 누르고 있었는데, 리어카맨을 놓쳐서 한 번도 안 누르고 떼면
+    'Alt 만 톡' 누른 게 돼서 게임이 Alt 가 계속 눌린 걸로 착각할 수 있었음
+    → 그 뒤로 바닥 재료를 눌러도 안 주워지고(Alt = 줍지 않고 이동), 화면 인식도 틀어짐."""
+    return chase_click(sct, cart, body, extra, tol=tol, avoid=avoid, alts=alts, alt=CART_ALT)
 
 
 _cart_log = {"sells": 0, "clicks": 0, "first": 0}
